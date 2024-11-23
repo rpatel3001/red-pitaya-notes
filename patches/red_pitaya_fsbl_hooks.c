@@ -483,7 +483,14 @@ u32 SetMacAddress()
     Status = XEmacPs_SetMacAddress(&Emac, Buffer + 0x10, 1);
     if(Status != XST_SUCCESS) return XST_FAILURE;
     xil_printf("Bootloader Si5351 config\r\n");
-    freq_set = 122880000;
+
+    Pointer = memmem(Buffer, 1024, "refclock=", 9);
+    if (Pointer == NULL) {
+        XREF_FREQ = 24576000;
+    }
+    else {
+        XREF_FREQ = (u32)strtoul(Pointer + 9, NULL, 10);
+    }
 
     /* Set Si5351 to Set freq */
     Status = si5351_Init(&Iic,correction);
