@@ -4,12 +4,12 @@ from signal import signal, SIGINT
 from struct import pack
 from sys import exit
 
-rates = {20000:0, 50000:1, 100000:2, 250000:3, 500000:4, 1250000:5, 2500000:6}
+rates = {32000:0, 64000:1, 128000:2, 256000:3, 512000:4, 1024000:5, 2048000:6}
 
 parser = ArgumentParser()
 
 parser.add_argument('--addr', help = 'IP address of the Red Pitaya board', required = True)
-parser.add_argument('--freq', help = 'center frequency in Hz (0 - 62500000)', type = int, required = True)
+parser.add_argument('--freq', help = 'center frequency in Hz (0 - 61440000)', type = int, required = True)
 parser.add_argument('--rate', help = 'sample rate (20000, 50000, 100000, 250000, 500000, 1250000, 2500000)', type = int, required = True)
 parser.add_argument('--corr', help = 'frequency correction in ppm (-100 - 100)', type = float, required = True)
 parser.add_argument('--file', help = 'output file', required = True)
