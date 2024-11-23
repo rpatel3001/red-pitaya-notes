@@ -476,25 +476,11 @@ u32 SetMacAddress()
     while(XIicPs_BusIsBusy(&Iic));
     Status = XIicPs_MasterRecvPolled(&Iic, Buffer, 1024, ADDR_EEPROM);
     if(Status != XST_SUCCESS) return XST_FAILURE;
-    Pointer = memmem(Buffer, 1024, "ethaddr=", 8);
-    if(Pointer == NULL) return XST_FAILURE;
-    Pointer += 7;
-    xil_printf("MAC address read from EEPROM:\r\n");
-    for(i = 0; i < 6; ++i)
-    {
-        Buffer[i] = strtol(Pointer + 1, &Pointer, 16);
-        xil_printf("%2x",Buffer[i]);
-        if(i < 5)
-            xil_printf(":");
-    }
-
-    xil_printf("\r\n");
-
     EmacConfig = XEmacPs_LookupConfig(XPAR_PS7_ETHERNET_0_DEVICE_ID);
     if(EmacConfig == NULL) return XST_FAILURE;
     Status = XEmacPs_CfgInitialize(&Emac, EmacConfig, EmacConfig->BaseAddress);
     if(Status != XST_SUCCESS) return XST_FAILURE;
-    Status = XEmacPs_SetMacAddress(&Emac, Buffer, 1);
+    Status = XEmacPs_SetMacAddress(&Emac, Buffer + 0x10, 1);
     if(Status != XST_SUCCESS) return XST_FAILURE;
     xil_printf("Bootloader Si5351 config\r\n");
     freq_set = 122880000;
