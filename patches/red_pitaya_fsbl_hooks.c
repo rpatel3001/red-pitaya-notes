@@ -4,14 +4,18 @@
 #include <string.h>
 #include "xiicps.h"
 #include "xemacps.h"
+#include "xgpiops.h"
 #include "xil_printf.h"
 
 const u8 ADDR_EEPROM = 0x50;
 const u8 ADDR_SI5351 = 0x60;
 
-const u32 XREF_FREQ = 24576000;
+static u32 XREF_FREQ = 24576000;
 
 const u32 correction = 0;
+
+#define GPIO_CLK_REF 49
+#define GPIO_HF_VHF 10
 
 /* Si5351 driver*/
 
@@ -485,13 +489,33 @@ u32 SetMacAddress()
     xil_printf("Bootloader Si5351 config\r\n");
 
     Pointer = memmem(Buffer, 1024, "refclock=", 9);
-    if (Pointer == NULL) {
-        XREF_FREQ = 24576000;
-    }
-    else {
+    if (Pointer) {
         XREF_FREQ = (u32)strtoul(Pointer + 9, NULL, 10);
     }
 
+    /* Enable Internal Clock Pin*/
+    XGpioPs Gpio;
+    XGpioPs_Config *Config = XGpioPs_LookupConfig(XPAR_XGPIOPS_0_DEVICE_ID);
+        if (Config == NULL) {
+        xil_printf("GPIO LookupConfig Failed\r\n");
+        return XST_FAILURE;
+    }
+
+    Status = XGpioPs_CfgInitialize(&Gpio, Config, Config->BaseAddr);
+    if (Status != XST_SUCCESS) {
+        xil_printf("GPIO CfgInitialize Failed\r\n");
+        return XST_FAILURE;
+    }
+    XGpioPs_SetDirectionPin(&Gpio, GPIO_CLK_REF, 1);
+    XGpioPs_SetOutputEnablePin(&Gpio, GPIO_CLK_REF, 1);
+
+    XGpioPs_SetDirectionPin(&Gpio, GPIO_HF_VHF, 1);
+    XGpioPs_SetOutputEnablePin(&Gpio, GPIO_HF_VHF, 1);
+
+    XGpioPs_WritePin(&Gpio, GPIO_CLK_REF, 1);
+    XGpioPs_WritePin(&Gpio, GPIO_HF_VHF, 0);
+
+    freq_set = 122880000;
     /* Set Si5351 to Set freq */
     Status = si5351_Init(&Iic,correction);
     if (Status != XST_SUCCESS) return XST_FAILURE;
