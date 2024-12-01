@@ -1,1 +1,8 @@
-awk -F : '{print "rp-"$4$5$6}' /sys/class/net/eth0/address > /etc/hostname
+# Get hostname from fw_printenv, or use default if command fails
+if hostname=$(fw_printenv -n hostname 2>/dev/null); then
+    echo "Hostname found in EEPROM: $hostname"
+else
+    hostname="web-888"
+fi
+
+echo $hostname > /etc/hostname
