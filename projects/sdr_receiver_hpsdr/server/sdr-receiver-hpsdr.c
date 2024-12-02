@@ -42,6 +42,10 @@ uint8_t adc_reg_tmp = 0;
 void process_ep2(uint8_t *frame);
 void *handler_ep6(void *arg);
 
+int att_initial();
+void att_cleanUp();
+int set_att_value(uint8_t att_val);
+
 #define OUTPUT "out"
 #define LOW "0"
 #define HIGH "1"
@@ -72,11 +76,11 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
+  att_initial();
 
-    cfg = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x40000000);
-    sts = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x41000000);
-    rx_data = mmap(NULL, 12*sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x42000000);
-
+  cfg = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x40000000);
+  sts = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x41000000);
+  rx_data = mmap(NULL, 12*sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x42000000);
 
   rx_rst = (uint8_t *)(cfg + 0);
   rx_adc_set = (uint8_t *)(cfg + 1);
@@ -169,6 +173,7 @@ int main(int argc, char *argv[])
   }
 
   close(sock_ep2);
+  att_cleanUp();
 
   return EXIT_SUCCESS;
 }
@@ -256,6 +261,16 @@ void process_ep2(uint8_t *frame)
       freq = ntohl(*(uint32_t *)(frame + 1));
       if(freq < freq_min || freq > freq_max) break;
       rx_freq[6] = (uint32_t)floor(freq / 122.88e6 * (1 << 30) + 0.5);
+      break;
+    case 20:
+    case 21:
+      /* set rx att*/
+      att_cal = frame[4] & 0x1f;
+      if(att_cal != att_tmp)
+      {
+        att_tmp = att_cal;
+        set_att_value(att_cal * 2);
+      }
       break;
     case 36:
     case 37:

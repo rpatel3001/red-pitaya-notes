@@ -2,7 +2,7 @@ CFLAGS = -O3 -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -D_GNU_
 
 all: sdr-receiver-hpsdr
 
-sdr-receiver-hpsdr: sdr-receiver-hpsdr.c
+sdr-receiver-hpsdr: sdr-receiver-hpsdr.c peri.c
 	gcc $(CFLAGS) -o $@ $^ -lm -lpthread
 
 clean:
