@@ -134,9 +134,7 @@ ln -s /media/mmcblk0p1/wifi root/wifi
 lbu add root
 lbu delete etc/resolv.conf
 lbu delete etc/cron.d/ft8
-lbu delete etc/cron.d/ft8_122_88
 lbu delete etc/cron.d/wspr
-lbu delete etc/cron.d/wspr_122_88
 lbu delete root/.ash_history
 
 lbu commit -d
@@ -163,7 +161,7 @@ tar -zxf \$wsprd_tar --strip-components=1 --directory=\$wsprd_dir
 rm \$wsprd_tar
 make -C \$wsprd_dir
 
-for p in server $projects $projects_122_88
+for p in server $projects
 do
   make -C /media/mmcblk0p1/apps/\$p clean
   make -C /media/mmcblk0p1/apps/\$p
