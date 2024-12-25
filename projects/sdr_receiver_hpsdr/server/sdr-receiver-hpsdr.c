@@ -59,7 +59,7 @@ int main(int argc, char *argv[])
   volatile uint8_t *rx_sel;
   char *end;
   uint8_t buffer[1032];
-  uint8_t reply[20] = {0xef, 0xfe, 2, 0, 0, 0, 0, 0, 0, 25, 1, 'W', 'E', 'B', '-', '8', '8', '8', ' ', 8};
+  uint8_t reply[22] = {0xEF, 0xFE, 0x02, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 25, 6, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0};
   uint32_t code;
   struct ifreq hwaddr;
   struct sockaddr_in addr_ep2, addr_from;
@@ -107,11 +107,32 @@ int main(int argc, char *argv[])
   }
 
   memset(&hwaddr, 0, sizeof(hwaddr));
-  
-  ioctl(sock_ep2, SIOCGIFHWADDR, &hwaddr);
-  for(i = 0; i < 6; ++i) reply[i + 3] = hwaddr.ifr_addr.sa_data[i];
+  strncpy(hwaddr.ifr_name, "eth0", IFNAMSIZ - 1);
+  hwaddr.ifr_name[IFNAMSIZ - 1] = '\0'; // Null-terminate
+  if (ioctl(sock_ep2, SIOCGIFHWADDR, &hwaddr) != -1) {
+    for(i = 0; i < 6; ++i) reply[i + 3] = hwaddr.ifr_addr.sa_data[i];
+  }
+  else {
+    fprintf(stderr, "cannot get the MAC address\n");
+  }
 
-  setsockopt(sock_ep2, SOL_SOCKET, SO_REUSEADDR, (void *)&yes , sizeof(yes));
+  setsockopt(sock_ep2, SOL_SOCKET, SO_REUSEADDR, (void *)&yes, sizeof(yes));
+
+  int optval = 7; // high priority.
+  if (setsockopt(sock_ep2, SOL_SOCKET, SO_PRIORITY, &optval, sizeof(optval)) < 0)
+  {
+    perror("UDP socket: SO_PRIORITY");
+  }
+
+  optval = 65535;
+  if (setsockopt(sock_ep2, SOL_SOCKET, SO_SNDBUF, (const char *)&optval, sizeof(optval)) < 0)
+  {
+    perror("data_socket: SO_SNDBUF");
+  }
+  if (setsockopt(sock_ep2, SOL_SOCKET, SO_RCVBUF, (const char *)&optval, sizeof(optval)) < 0)
+  {
+    perror("data_socket: SO_RCVBUF");
+  }
 
   memset(&addr_ep2, 0, sizeof(addr_ep2));
   addr_ep2.sin_family = AF_INET;
@@ -142,18 +163,24 @@ int main(int argc, char *argv[])
         process_ep2(buffer + 523);
         break;
       case 0x0002feef:
+        fprintf(stderr, "Discovery packet received \n");
+        fprintf(stderr,"SDR Program IP-address %s  \n", inet_ntoa(addr_from.sin_addr)); 
+        fprintf(stderr, "Discovery Port %d \n", ntohs(addr_from.sin_port));
         reply[2] = 2 + active_thread;
         memset(buffer, 0, 60);
-        memcpy(buffer, reply, 20);
+        memcpy(buffer, reply, sizeof(reply));
+
         sendto(sock_ep2, buffer, 60, 0, (struct sockaddr *)&addr_from, size_from);
         break;
       case 0x0004feef:
+        fprintf(stderr, "SDR Program sends Stop command \n");
         enable_thread = 0;
         while(active_thread) usleep(1000);
         break;
       case 0x0104feef:
       case 0x0204feef:
       case 0x0304feef:
+        fprintf(stderr, "Start Port %d \n", ntohs(addr_from.sin_port));
         enable_thread = 0;
         while(active_thread) usleep(1000);
         memset(&addr_ep6, 0, sizeof(addr_ep6));
@@ -168,6 +195,11 @@ int main(int argc, char *argv[])
           return EXIT_FAILURE;
         }
         pthread_detach(thread);
+        break;
+      default:
+        {
+          fprintf(stderr, "Received packages not for me! \n");
+        }
         break;
     }
   }
