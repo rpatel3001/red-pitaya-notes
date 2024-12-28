@@ -60,6 +60,8 @@ int set_att_value(uint8_t att_val);
 
 uint32_t phases[NUM_CHANNELS];
 
+unsigned char reply[22] = {0xEF, 0xFE, 0x02, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 73, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, NUM_CHANNELS, 0, 0 };
+
 int main(int argc, char *argv[])
 {
   int fd, i;
@@ -69,12 +71,6 @@ int main(int argc, char *argv[])
   volatile uint8_t *rx_sel;
   char *end;
   uint8_t buffer[1032];
-  uint8_t reply[22] = {0xEF, 0xFE, 0x02, 
-                      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, // mac
-                      6,  // HL code
-                      6, // protocol version
-                      0, 0, 0, 0, 0, 0, 0, // 
-                      NUM_CHANNELS, 0, 0, 0};
   uint32_t code;
   struct ifreq hwaddr;
   struct sockaddr_in addr_ep2, addr_from;
@@ -183,11 +179,10 @@ int main(int argc, char *argv[])
       fprintf(stderr, "Discovery packet received \n");
       fprintf(stderr, "SDR Program IP-address %s  \n", inet_ntoa(addr_from.sin_addr));
       fprintf(stderr, "Discovery Port %d \n", ntohs(addr_from.sin_port));
-      reply[2] = 2 + active_thread;
-      memset(buffer, 0, 60);
       memcpy(buffer, reply, sizeof(reply));
-
-      sendto(sock_ep2, buffer, 60, 0, (struct sockaddr *)&addr_from, size_from);
+      memset(buffer + sizeof(reply), 0, 63 - sizeof(reply));
+      buffer[2] = 2 + active_thread;
+      sendto(sock_ep2, buffer, 63, 0, (struct sockaddr *)&addr_from, size_from);
       break;
     case 0x0004feef:
       fprintf(stderr, "SDR Program sends Stop command \n");
@@ -247,14 +242,15 @@ void process_change_freq(int ch, uint32_t data)
   }
 }
 
+// https://github.com/softerhardware/Hermes-Lite2/wiki/Protocol
 void process_ep2(uint8_t *frame)
 {
   uint32_t freq;
 
-  switch (frame[0])
+  switch (frame[0] >> 1)
   {
-  case 0:
-  case 1:
+  case 0x0:
+  {
     receivers = ((frame[4] >> 3) & 7) + 1;
     // fprintf(stderr, "Receivers set to %d\n", receivers);
 
@@ -283,50 +279,39 @@ void process_ep2(uint8_t *frame)
       break;
     }
     break;
+  }
+
+  case 1:
+    // Tx NCO frequency
+    break;
+
+  case 2:
+  case 3:
   case 4:
   case 5:
-    /* set rx phase increment */
-    process_change_freq(0, *(uint32_t *)(frame + 1));
-    break;
   case 6:
   case 7:
-    /* set rx phase increment */
-    process_change_freq(1, *(uint32_t *)(frame + 1));
-    break;
   case 8:
+    /* set rx phase increment */
+    process_change_freq((frame[0] >> 1) - 2, *(uint32_t *)(frame + 1));
+    break;
+
   case 9:
-    /* set rx phase increment */
-    process_change_freq(2, *(uint32_t *)(frame + 1));
+    // LPF selection
     break;
-  case 10:
-  case 11:
-    /* set rx phase increment */
-    process_change_freq(3, *(uint32_t *)(frame + 1));
-    break;
-  case 12:
-  case 13:
-    /* set rx phase increment */
-    process_change_freq(4, *(uint32_t *)(frame + 1));
-    break;
-  case 14:
-  case 15:
-    /* set rx phase increment */
-    process_change_freq(5, *(uint32_t *)(frame + 1));
-    break;
-  case 16:
-  case 17:
-    /* set rx phase increment */
-    process_change_freq(6, *(uint32_t *)(frame + 1));
-    break;
-  case 20:
-  case 21:
+
+  case 0x0a:
     {
       uint8_t att_cal = 0;
       if (frame[4] & 0x40) {
         /* set rx att*/
         att_cal = frame[4] & 0x3f;
       } else {
-        att_cal = 63;
+        // back compatibale mode
+        if (frame[4] & 0x20)
+          att_cal = (frame[4] & 0x1f) * 2;
+        else
+          att_cal = 0;
       }
 
       if (att_cal != att_prev)
@@ -335,23 +320,22 @@ void process_ep2(uint8_t *frame)
         printf("Input ATT is %d\n", att_cal);
         set_att_value(att_cal);
       }
+
+      break;
     }
-    break;
-  case 36:
-  case 37:
-    /* set rx phase increment */
-    process_change_freq(7, *(uint32_t *)(frame + 1));
-    break;
+
+  default:
+    // printf("Unknown command: C0=%x C1=%x C2=%x C3=%x\n", frame[0] >> 1, frame[1], frame[2], frame[3]);
   }
 }
 
-const uint8_t header[40] =
-    {
-        127, 127, 127, 0, 0, 33, 17, 25,
-        127, 127, 127, 8, 0, 0, 0, 0,
-        127, 127, 127, 16, 0, 0, 0, 0,
-        127, 127, 127, 24, 0, 0, 0, 0,
-        127, 127, 127, 32, 66, 66, 66, 66};
+const uint8_t headers[5][8] = {
+  {127, 127, 127, 0, 0, 33, 17, 25,},
+  {127, 127, 127, 8, 0, 0, 0, 0,},
+  {127, 127, 127, 16, 0, 0, 0, 0,},
+  {127, 127, 127, 24, 0, 0, 0, 0,},
+  {127, 127, 127, 32, 66, 66, 66, 66}
+};
 
 struct iovec iovec[25][1];
 struct mmsghdr datagram[25];
@@ -412,8 +396,8 @@ void *handler_ep6(void *arg)
     for (i = 0; i < m * 2; ++i)
     {
       pointer = buffer + i * 516 - i % 2 * 4 + 8;
-      memcpy(pointer, header + header_offset, 8);
-      header_offset = header_offset >= 32 ? 0 : header_offset + 8;
+      memcpy(pointer, headers[header_offset], 8);
+      header_offset = (header_offset + 1) % 5;
 
       pointer += 8;
       memset(pointer, 0, 504);
