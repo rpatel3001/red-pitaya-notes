@@ -66,17 +66,18 @@ int64_t microtime(void) {
     return mst;
 }
 
+/* record current monotonic time in start_time */
+void startWatch(struct timespec *start_time) {
+    clock_gettime(CLOCK_MONOTONIC, start_time);
+}
+
 // return elapsed time and set start_time to current time
 int64_t lapWatch(struct timespec *start_time) {
     struct timespec end_time;
     clock_gettime(CLOCK_MONOTONIC, &end_time);
 
-    int64_t res = ((int64_t) end_time.tv_sec * 1000UL + end_time.tv_nsec / 1000000UL)
-        - ((int64_t) start_time->tv_sec * 1000UL + start_time->tv_nsec / 1000000UL);
-
-    if (start_time->tv_sec == 0 && start_time->tv_nsec == 0) {
-        res = 0;
-    }
+    int64_t res = ((int64_t) end_time.tv_sec * 1000LL * 1000LL + end_time.tv_nsec / 1000LL)
+        - ((int64_t) start_time->tv_sec * 1000LL * 1000LL + start_time->tv_nsec / 1000LL);
 
     *start_time = end_time;
     return res;
@@ -204,6 +205,7 @@ int main(int argc, char *argv[])
   int yes = 1;
   int64_t us, usp;
   int rx_samples = 0;
+  struct timespec watch;
 
   if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
     fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
@@ -300,12 +302,11 @@ int main(int argc, char *argv[])
 
     *rx_rst |= 1;
 
+    startWatch(&watch);
     us = microtime();
+    int64_t last_iteration_us = 0;
     while(!interrupted)
     {
-      usp = us;
-      us = microtime();
-      int64_t last_iteration_us = us - usp;
 
       if(ioctl(sock_client, FIONREAD, &size) < 0) {
         fprintf(stderr, "fionread break\n");
@@ -330,6 +331,8 @@ int main(int argc, char *argv[])
           rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << 30) + 0.5);
         }
       }
+
+      int64_t recvTime = lapWatch(&watch);
 
       #ifdef TEST
       // simulate 50 MByte/s
@@ -379,6 +382,8 @@ int main(int argc, char *argv[])
         #endif
       }
 
+      int64_t readTime = lapWatch(&watch);
+
       // to ensure flushClient doesn't take super long,
       // limit each send syscall to 16x the chunk size
       // this means we can send on the network 8x faster than we get data
@@ -387,12 +392,21 @@ int main(int argc, char *argv[])
       if (bytesWritten < 0) {
         break;
       }
+
+      int64_t flushTime = lapWatch(&watch);
+
       // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
       if (bytesWritten == 0) {
         usleep(500);
       }
-      // emptying the FIFO is top priority, it is immediately re-checked after reading out of it
-      // thus we only sleep or flush the client buffer if there isn't enough data in the FIFO
+
+      int64_t sleepTime = lapWatch(&watch);
+
+      last_iteration_us = recvTime + readTime + flushTime + sleepTime;
+      if (last_iteration_us > 1000) {
+          fprintf(stderr, "not fast enough! recvTime %5lld readTime %5lld flushTime %5lld sleepTime %5lld\n",
+                  recvTime, readTime, flushTime, sleepTime);
+      }
     }
 
     fprintf(stderr, "disconnected\n");
