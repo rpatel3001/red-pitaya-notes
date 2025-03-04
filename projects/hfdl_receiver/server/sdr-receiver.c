@@ -211,6 +211,7 @@ int main(int argc, char *argv[])
   int64_t us, usp;
   int rx_samples = 0;
   struct timespec watch;
+  int dropping = 0; // dropping data until buffer is half empty
 
   if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
     fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
@@ -363,7 +364,13 @@ int main(int argc, char *argv[])
 
       while(rx_samples >= CHUNK_SAMPLES)
       {
-        if(sendqLen(cl) + CHUNK_BYTES >= SENDQ_MAX) {
+        if (sendqLen(cl) < SENDQ_MAX / 2) {
+          dropping = 0;
+        }
+        if (sendqLen(cl) + CHUNK_BYTES >= SENDQ_MAX) {
+          dropping = 1;
+        }
+        if(dropping) {
           bytesDropped += CHUNK_BYTES;
           static int64_t antiSpam;
           int64_t now = microtime();
