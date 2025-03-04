@@ -175,7 +175,7 @@ int main(int argc, char *argv[])
     return -1;
   }
 
-  fprintf(stderr, "\nfifo words %d\nchunk bytes %d\nqueue bytes %d\n", FIFO_SAMPLES, CHUNK_BYTES, SENDQ_MAX);
+  fprintf(stderr, "\nfifo samples %d\nchunk samples %d\nqueue size in chunks %d\n", FIFO_SAMPLES, CHUNK_SAMPLES, SENDQ_MAX / CHUNK_BYTES);
 
   struct client *cl = malloc(sizeof(struct client));
   if (cl == NULL) {
