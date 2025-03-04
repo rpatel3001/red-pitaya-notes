@@ -340,8 +340,8 @@ int main(int argc, char *argv[])
       int64_t recvTime = lapWatch(&watch);
 
       #ifdef TEST
-      // simulate 50 MByte/s
-      *rx_cntr += 50 * last_iteration_us / SAMPLE_SIZE;
+      // simulate 25 MByte/s
+      *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
       #endif
 
       rx_samples = *rx_cntr;
@@ -396,13 +396,13 @@ int main(int argc, char *argv[])
 
       // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
       if (bytesWritten == 0) {
-        usleep(250);
+        usleep(500);
       }
 
       int64_t sleepTime = lapWatch(&watch);
 
       last_iteration_us = recvTime + readTime + flushTime + sleepTime;
-      if (last_iteration_us > 2000) {
+      if (last_iteration_us > 5000) {
           fprintf(stderr, "not fast enough! recvTime %5lld readTime %5lld flushTime %5lld sleepTime %5lld\n",
                   recvTime, readTime, flushTime, sleepTime);
       }
