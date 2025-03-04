@@ -41,7 +41,7 @@ void signal_handler(int sig)
   interrupted = 1;
 }
 
-#define CHUNK_SAMPLES (NUMCHANS * 512)
+#define CHUNK_SAMPLES (NUMCHANS * 256)
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 // send q must be multiple of CHUNK_BYTES
 // writes into send q must always be exactly CHUNK_BYTES big
@@ -91,7 +91,7 @@ void setPriority() {
     int policy = SCHED_FIFO;
     struct sched_param param = { 0 };
 
-    param.sched_priority = sched_get_priority_min(policy);
+    param.sched_priority = 80;
 
     sched_setscheduler(pid, policy, &param);
 }
@@ -341,19 +341,13 @@ int main(int argc, char *argv[])
 
       rx_samples = *rx_cntr;
 
-      // some debugging for long iterations of the loop
-      if (last_iteration_us > 5000) {
-        fprintf(stderr, "long %lld\n", last_iteration_us);
-        fprintf(stderr, "%6d %6d %6d\n", rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
-      }
-
       if(rx_samples >= FIFO_SAMPLES)
       {
         fprintf(stderr, "reset %lld\n", last_iteration_us);
         fprintf(stderr, "%6d %6d %6d\n", rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
         *rx_rst &= ~1;
         *rx_rst |= 1;
-        //exit(EXIT_FAILURE);
+        rx_samples = 0;
       }
 
       while(rx_samples >= CHUNK_SAMPLES)
@@ -397,13 +391,13 @@ int main(int argc, char *argv[])
 
       // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
       if (bytesWritten == 0) {
-        usleep(500);
+        usleep(250);
       }
 
       int64_t sleepTime = lapWatch(&watch);
 
       last_iteration_us = recvTime + readTime + flushTime + sleepTime;
-      if (last_iteration_us > 1000) {
+      if (last_iteration_us > 2000) {
           fprintf(stderr, "not fast enough! recvTime %5lld readTime %5lld flushTime %5lld sleepTime %5lld\n",
                   recvTime, readTime, flushTime, sleepTime);
       }
