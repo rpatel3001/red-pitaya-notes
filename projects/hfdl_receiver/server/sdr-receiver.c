@@ -13,6 +13,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <sys/resource.h>
+#include <sched.h>
+
+
 
 #define NUMCHANS 12
 #define TCP_PORT 1001
@@ -36,16 +40,6 @@ void signal_handler(int sig)
   interrupted = 1;
 }
 
-int64_t microtime(void) {
-    struct timeval tv;
-    int64_t mst;
-
-    gettimeofday(&tv, NULL);
-    mst = ((int64_t) tv.tv_sec) * 1000LL * 1000LL;
-    mst += tv.tv_usec;
-    return mst;
-}
-
 #define CHUNK_SAMPLES (NUMCHANS * 512)
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 // send q must be multiple of CHUNK_BYTES
@@ -60,6 +54,29 @@ struct client
   int64_t last_flush;
   int64_t last_send;
 };
+
+int64_t microtime(void) {
+    struct timeval tv;
+    int64_t mst;
+
+    gettimeofday(&tv, NULL);
+    mst = ((int64_t) tv.tv_sec) * 1000LL * 1000LL;
+    mst += tv.tv_usec;
+    return mst;
+}
+
+void setPriority() {
+    int pid = 0; // this process
+
+    setpriority(PRIO_PROCESS, pid, -20);
+
+    int policy = SCHED_FIFO;
+    struct sched_param param = { 0 };
+
+    param.sched_priority = sched_get_priority_min(policy);
+
+    sched_setscheduler(pid, policy, &param);
+}
 
 static int sendqLen(struct client *c)
 {
@@ -237,6 +254,8 @@ int main(int argc, char *argv[])
   }
 
   listen(sock_server, 1024);
+
+  setPriority(); // set high priority
 
   while(!interrupted)
   {
