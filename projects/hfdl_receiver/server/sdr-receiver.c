@@ -325,7 +325,7 @@ int main(int argc, char *argv[])
           int64_t now = microtime();
           if (now > antiSpam) {
             fprintf(stderr, "dropped kBytes: %9.0f\n", bytesDropped / 1024.0);
-            antiSpam = now + 10 * 1000 * 1000LL;
+            antiSpam = now + 1 * 1000 * 1000LL;
           }
           // sendq is full, drop this chunk by ??? reading from the fifo ???
           // the var buffer is not used anymore except to discard the data
