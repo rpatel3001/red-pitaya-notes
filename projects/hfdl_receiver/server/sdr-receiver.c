@@ -280,16 +280,17 @@ int main(int argc, char *argv[])
         }
       }
 
-      if(*rx_cntr >= FIFO_SAMPLES)
+      int rx_samples = *rx_cntr;
+
+      if(rx_samples >= FIFO_SAMPLES)
       {
         fprintf(stderr, "reset %lld\n", us-usp);
         *rx_rst &= ~1;
         *rx_rst |= 1;
       }
 
-      if(*rx_cntr >= CHUNK_SAMPLES)
+      if(rx_samples >= CHUNK_SAMPLES)
       {
-        //fprintf(stderr, "send %d\n", *rx_cntr);
         if(sendqLen(cl) + CHUNK_BYTES >= SENDQ_MAX) {
           bytesDropped += CHUNK_BYTES;
           static int64_t antiSpam;
@@ -311,15 +312,20 @@ int main(int argc, char *argv[])
       }
       else
       {
-        usleep(500);
-      }
-
-      // to ensure flushClient doesn't take super long,
-      // limit each send syscall to 16x the chunk size
-      // this means we can send on the network 16x faster than we get data
-      // enough to catch up quickly
-      if (flushClient(cl, 16 * CHUNK_BYTES) < 0) {
-        break;
+        // to ensure flushClient doesn't take super long,
+        // limit each send syscall to 16x the chunk size
+        // this means we can send on the network 4x faster than we get data
+        // enough to catch up quickly
+        int bytesWritten = flushClient(cl, 4 * CHUNK_BYTES);
+        if (bytesWritten < 0) {
+          break;
+        }
+        // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
+        if (bytesWritten <= CHUNK_BYTES) {
+          usleep(500);
+        }
+        // emptying the FIFO is top priority, it is immediately re-checked after reading out of it
+        // thus we only sleep or flush the client buffer if there isn't enough data in the FIFO
       }
     }
 
