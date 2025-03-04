@@ -46,7 +46,7 @@ int64_t microtime(void) {
     return mst;
 }
 
-#define CHUNK_SAMPLES (NUMCHANS * 256)
+#define CHUNK_SAMPLES (NUMCHANS * 1024)
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 // send q must be multiple of CHUNK_BYTES
 // writes into send q must always be exactly CHUNK_BYTES big
@@ -169,6 +169,7 @@ int main(int argc, char *argv[])
   void *buffer;
   int yes = 1;
   int64_t us, usp;
+  int rx_samples = 0;
 
   if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
     fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
@@ -189,6 +190,7 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
+  #ifndef TEST
   if((fd = open("/dev/mem", O_RDWR)) < 0)
   {
     perror("open");
@@ -198,6 +200,14 @@ int main(int argc, char *argv[])
   cfg = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x40000000);
   sts = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x41000000);
   fifo = mmap(NULL, FIFO_BYTES, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x42000000);
+  #else
+  cfg = malloc(sysconf(_SC_PAGESIZE));
+  memset(cfg, 0x0, sysconf(_SC_PAGESIZE));
+  sts = malloc(sysconf(_SC_PAGESIZE));
+  memset(sts, 0x0, sysconf(_SC_PAGESIZE));
+  fifo = malloc(FIFO_BYTES);
+  memset(fifo, 0xb, FIFO_BYTES);
+  #endif
 
   rx_rst = (uint8_t *)(cfg + 0);
   rx_sel = (uint8_t *)(cfg + 1);
@@ -250,12 +260,18 @@ int main(int argc, char *argv[])
 
     signal(SIGINT, signal_handler);
 
+    fprintf(stderr, "connected\n");
+
     *rx_rst |= 1;
 
+    us = microtime();
     while(!interrupted)
     {
       usp = us;
       us = microtime();
+      int64_t last_iteration_us = us - usp;
+
+      #ifndef TEST
       if(ioctl(sock_client, FIONREAD, &size) < 0) {
         fprintf(stderr, "fionread break\n");
         break;
@@ -279,14 +295,26 @@ int main(int argc, char *argv[])
           rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << 30) + 0.5);
         }
       }
+      #endif
 
-      int rx_samples = *rx_cntr;
+      #ifdef TEST
+      // simulate 25 MByte/s
+      *rx_cntr += 0.5 * last_iteration_us / SAMPLE_SIZE;
+      #endif
+
+      rx_samples = *rx_cntr;
+      if (last_iteration_us > 500) {
+        fprintf(stderr, "long %lld\n", last_iteration_us);
+        fprintf(stderr, "%6d %6d %6d\n", rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
+      }
 
       if(rx_samples >= FIFO_SAMPLES)
       {
-        fprintf(stderr, "reset %lld\n", us-usp);
+        fprintf(stderr, "reset %lld\n", last_iteration_us);
+        fprintf(stderr, "%6d %6d %6d\n", rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
         *rx_rst &= ~1;
         *rx_rst |= 1;
+        //exit(EXIT_FAILURE);
       }
 
       if(rx_samples >= CHUNK_SAMPLES)
@@ -309,6 +337,9 @@ int main(int argc, char *argv[])
           cl->sendqEnd += CHUNK_BYTES;
           normalizeSendq(cl);
         }
+        #ifdef TEST
+        rx_samples -= CHUNK_SAMPLES;
+        #endif
       }
       else
       {
@@ -321,17 +352,15 @@ int main(int argc, char *argv[])
           break;
         }
         // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
-        if (bytesWritten <= CHUNK_BYTES) {
-          usleep(500);
+        if (bytesWritten == 0) {
+          usleep(50);
         }
         // emptying the FIFO is top priority, it is immediately re-checked after reading out of it
         // thus we only sleep or flush the client buffer if there isn't enough data in the FIFO
       }
     }
 
-    if (!interrupted) {
-      fprintf(stderr, "disconnected\n");
-    }
+    fprintf(stderr, "disconnected\n");
 
     signal(SIGINT, SIG_DFL);
     close(sock_client);
