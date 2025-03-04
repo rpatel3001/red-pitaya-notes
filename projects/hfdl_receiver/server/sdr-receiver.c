@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <math.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <sys/ioctl.h>
@@ -13,11 +14,22 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <sys/resource.h>
+#include <sched.h>
+
+
 
 #define NUMCHANS 12
 #define TCP_PORT 1001
 
-#define FIFO_WORDS 32768
+// pretty sure fifo bytes should not be changed
+// also needs to be a multiple of system pagesize but that's usually 4K
+// rpi5 uses 16K pagesize, apple uses 64K, so 128K is still a multiple
+// should be fine
+#define FIFO_BYTES 128 * 1024
+
+#define SAMPLE_SIZE 4 // in bytes
+#define FIFO_SAMPLES (FIFO_BYTES / SAMPLE_SIZE)
 
 struct control
 {
@@ -34,6 +46,21 @@ void signal_handler(int sig)
   interrupted = 1;
 }
 
+#define CHUNK_SAMPLES (NUMCHANS * 256)
+#define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
+// send q must be multiple of CHUNK_BYTES
+// writes into send q must always be exactly CHUNK_BYTES big
+#define SENDQ_MAX (96 * 1024 * 1024 / CHUNK_BYTES * CHUNK_BYTES)
+struct client
+{
+  unsigned char sendq[SENDQ_MAX];  // Write buffer - allocated later
+  unsigned char *sendqStart;
+  unsigned char *sendqEnd; // where the data in the sendQ starts
+  int fd; // File descriptor
+  int64_t last_flush;
+  int64_t last_send;
+};
+
 int64_t microtime(void) {
     struct timeval tv;
     int64_t mst;
@@ -44,19 +71,35 @@ int64_t microtime(void) {
     return mst;
 }
 
-#define CHUNK_SIZE (NUMCHANS * 2 * 2 * 256)
-// send q must be multiple of chunkSize
-// writes into send q must always be exactly chunkSize big
-#define SENDQ_MAX (8 * 1024 * 1024 / CHUNK_SIZE * CHUNK_SIZE)
-struct client
-{
-  int fd; // File descriptor
-  unsigned char *sendqStart;
-  unsigned char *sendqEnd; // where the data in the sendQ starts
-  unsigned char sendq[SENDQ_MAX];  // Write buffer - allocated later
-  int64_t last_flush;
-  int64_t last_send;
-};
+/* record current monotonic time in start_time */
+void startWatch(struct timespec *start_time) {
+    clock_gettime(CLOCK_MONOTONIC, start_time);
+}
+
+// return elapsed time and set start_time to current time
+int64_t lapWatch(struct timespec *start_time) {
+    struct timespec end_time;
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+
+    int64_t res = ((int64_t) end_time.tv_sec * 1000LL * 1000LL + end_time.tv_nsec / 1000LL)
+        - ((int64_t) start_time->tv_sec * 1000LL * 1000LL + start_time->tv_nsec / 1000LL);
+
+    *start_time = end_time;
+    return res;
+}
+
+void setPriority() {
+    int pid = 0; // this process
+
+    setpriority(PRIO_PROCESS, pid, -20);
+
+    int policy = SCHED_FIFO;
+    struct sched_param param = { 0 };
+
+    param.sched_priority = 80;
+
+    sched_setscheduler(pid, policy, &param);
+}
 
 static int sendqLen(struct client *c)
 {
@@ -110,7 +153,7 @@ static void normalizeSendq(struct client *c)
   }
 }
 
-static int flushClient(struct client *c)
+static int flushClient(struct client *c, int limit)
 {
   static int64_t byteCounter;
   int debug = 0;
@@ -125,12 +168,16 @@ static int flushClient(struct client *c)
     return 0;
   }
 
+  if (toWrite > limit) {
+      toWrite = limit;
+  }
+
   int bytesWritten = send(c->fd, c->sendqStart, toWrite, MSG_NOSIGNAL);
   int err = errno;
 
   // If we get -1, it's only fatal if it's not EAGAIN/EWOULDBLOCK
   if (bytesWritten < 0 && (err == EAGAIN || err == EWOULDBLOCK)) {
-    //printf("block\n");
+    //fprintf(stderr, "block\n");
     return 0;
   }
   if (bytesWritten < 0) {
@@ -144,7 +191,7 @@ static int flushClient(struct client *c)
     normalizeSendq(c);
   }
 
-  //printf("sent %d\n", bytesWritten);
+  //fprintf(stderr, "sent %d\n", bytesWritten);
   return bytesWritten;
 }
 
@@ -161,16 +208,17 @@ int main(int argc, char *argv[])
   uint32_t size, n;
   void *buffer;
   int yes = 1;
-  uint64_t us, usp;
+  int64_t us, usp;
+  int rx_samples = 0;
+  struct timespec watch;
+  int dropping = 0; // dropping data until buffer is half empty
 
-  if (CHUNK_SIZE/4 > FIFO_WORDS / 2) {
-    printf("chunk size / 4 %d should be less than half of full FIFO size %d", CHUNK_SIZE/4, FIFO_WORDS);
+  if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
+    fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
     return -1;
   }
 
-  int chunkSize = CHUNK_SIZE;
-
-  printf("\nfifo words %d\nchunk bytes %d\nqueue bytes %d\n", FIFO_WORDS, CHUNK_SIZE, SENDQ_MAX);
+  fprintf(stderr, "\nfifo samples %d\nchunk samples %d\nqueue size in chunks %d\n", FIFO_SAMPLES, CHUNK_SAMPLES, SENDQ_MAX / CHUNK_BYTES);
 
   struct client *cl = malloc(sizeof(struct client));
   if (cl == NULL) {
@@ -178,12 +226,13 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
-  if((buffer = malloc(chunkSize)) == NULL)
+  if((buffer = malloc(CHUNK_BYTES)) == NULL)
   {
     perror("malloc");
     return EXIT_FAILURE;
   }
 
+  #ifndef TEST
   if((fd = open("/dev/mem", O_RDWR)) < 0)
   {
     perror("open");
@@ -192,7 +241,15 @@ int main(int argc, char *argv[])
 
   cfg = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x40000000);
   sts = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x41000000);
-  fifo = mmap(NULL, 32*sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x42000000);
+  fifo = mmap(NULL, FIFO_BYTES, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x42000000);
+  #else
+  cfg = malloc(sysconf(_SC_PAGESIZE));
+  memset(cfg, 0x0, sysconf(_SC_PAGESIZE));
+  sts = malloc(sysconf(_SC_PAGESIZE));
+  memset(sts, 0x0, sysconf(_SC_PAGESIZE));
+  fifo = malloc(FIFO_BYTES);
+  memset(fifo, 0xb, FIFO_BYTES);
+  #endif
 
   rx_rst = (uint8_t *)(cfg + 0);
   rx_sel = (uint8_t *)(cfg + 1);
@@ -223,6 +280,8 @@ int main(int argc, char *argv[])
 
   listen(sock_server, 1024);
 
+  setPriority(); // set high priority
+
   while(!interrupted)
   {
     *rx_rst &= ~1;
@@ -245,12 +304,16 @@ int main(int argc, char *argv[])
 
     signal(SIGINT, signal_handler);
 
+    fprintf(stderr, "connected\n");
+
     *rx_rst |= 1;
 
+    startWatch(&watch);
+    us = microtime();
+    int64_t last_iteration_us = 0;
     while(!interrupted)
     {
-      usp = us;
-      us = microtime();
+
       if(ioctl(sock_client, FIONREAD, &size) < 0) {
         fprintf(stderr, "fionread break\n");
         break;
@@ -275,48 +338,89 @@ int main(int argc, char *argv[])
         }
       }
 
-      if(*rx_cntr >= FIFO_WORDS)
+      int64_t recvTime = lapWatch(&watch);
+
+      #ifdef TEST
+      // simulate 25 MByte/s
+      *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
+      #endif
+
+      rx_samples = *rx_cntr;
+
+      if(rx_samples >= FIFO_SAMPLES)
       {
-        printf("reset %lld\n", us-usp);
+        fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
+                last_iteration_us, rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
         *rx_rst &= ~1;
         *rx_rst |= 1;
-      }
+        rx_samples = 0;
 
-      if(*rx_cntr >= chunkSize/4)
-      {
-        //printf("send %d\n", *rx_cntr);
-        if(sendqLen(cl) + chunkSize >= SENDQ_MAX) {
-          bytesDropped += chunkSize;
-          static int64_t antiSpam;
-          int64_t now = microtime();
-          if (now > antiSpam) {
-            fprintf(stderr, "dropped kBytes: %9.0f\n", bytesDropped / 1024.0);
-            antiSpam = now + 10 * 1000 * 1000LL;
-          }
-          // sendq is full, drop this chunk by ??? reading from the fifo ???
-          // the var buffer is not used anymore except to discard the data
-          memcpy(buffer, fifo, chunkSize);
-        } else {
-          // copy chunk into the sendq
-          memcpy(cl->sendqEnd, fifo, chunkSize);
-          // advance buffer
-          cl->sendqEnd += chunkSize;
-          normalizeSendq(cl);
+        // resets really shouldn't happen but they cause issues so just drop the network connection and start over
+        // make this easy to toggle
+        if (1) {
+          break;
         }
       }
-      else
+
+      while(rx_samples >= CHUNK_SAMPLES)
       {
+        int wasDropping = dropping;
+        int dropUntil = SENDQ_MAX / 2;
+        if (sendqLen(cl) < dropUntil) {
+          dropping = 0;
+        }
+        if (sendqLen(cl) + CHUNK_BYTES >= SENDQ_MAX) {
+          dropping = 1;
+        }
+        if(dropping) {
+          if (!wasDropping) {
+            fprintf(stderr, "dropping at least %d MBytes, total dropped MBytes: %8d\n", dropUntil / 1024 / 1024, bytesDropped / 1024 / 1024);
+          }
+          bytesDropped += CHUNK_BYTES;
+          // sendq is full, drop this chunk by ??? reading from the fifo ???
+          // the var buffer is not used anymore except to discard the data
+          memcpy(buffer, fifo, CHUNK_BYTES);
+        } else {
+          // copy chunk into the sendq
+          memcpy(cl->sendqEnd, fifo, CHUNK_BYTES);
+          // advance buffer
+          cl->sendqEnd += CHUNK_BYTES;
+          normalizeSendq(cl);
+        }
+        rx_samples -= CHUNK_SAMPLES;
+        #ifdef TEST
+        *rx_cntr -= CHUNK_SAMPLES;
+        #endif
+      }
+
+      int64_t readTime = lapWatch(&watch);
+
+      // to ensure flushClient doesn't take super long,
+      // limit each send syscall to 16x the chunk size
+      // this means we can send on the network 8x faster than we get data
+      // enough to catch up quickly
+      int bytesWritten = flushClient(cl, 8 * CHUNK_BYTES);
+      if (bytesWritten < 0) {
+        break;
+      }
+
+      int64_t flushTime = lapWatch(&watch);
+
+      // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
+      if (bytesWritten == 0) {
         usleep(500);
       }
 
-      if (flushClient(cl) < 0) {
-        break;
+      int64_t sleepTime = lapWatch(&watch);
+
+      last_iteration_us = recvTime + readTime + flushTime + sleepTime;
+      if (last_iteration_us > 5000) {
+          fprintf(stderr, "not fast enough! recvTime %5lld readTime %5lld flushTime %5lld sleepTime %5lld\n",
+                  recvTime, readTime, flushTime, sleepTime);
       }
     }
 
-    if (!interrupted) {
-      fprintf(stderr, "disconnected\n");
-    }
+    fprintf(stderr, "disconnected\n");
 
     signal(SIGINT, SIG_DFL);
     close(sock_client);
