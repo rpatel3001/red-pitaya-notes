@@ -7,15 +7,17 @@
 #include <fcntl.h>
 #include <math.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <arpa/inet.h>
-#include <time.h>
+#include <errno.h>
 
-#define NUMCHANS 6
+#define NUMCHANS 12
 #define TCP_PORT 1001
+
+#define FIFO_WORDS 32768
 
 struct control
 {
@@ -32,13 +34,127 @@ void signal_handler(int sig)
   interrupted = 1;
 }
 
+int64_t microtime(void) {
+    struct timeval tv;
+    int64_t mst;
+
+    gettimeofday(&tv, NULL);
+    mst = ((int64_t) tv.tv_sec) * 1000LL * 1000LL;
+    mst += tv.tv_usec;
+    return mst;
+}
+
+#define CHUNK_SIZE (NUMCHANS * 2 * 2 * 256)
+// send q must be multiple of chunkSize
+// writes into send q must always be exactly chunkSize big
+#define SENDQ_MAX (8 * 1024 * 1024 / CHUNK_SIZE * CHUNK_SIZE)
+struct client
+{
+  int fd; // File descriptor
+  unsigned char *sendqStart;
+  unsigned char *sendqEnd; // where the data in the sendQ starts
+  unsigned char sendq[SENDQ_MAX];  // Write buffer - allocated later
+  int64_t last_flush;
+  int64_t last_send;
+};
+
+static int sendqLen(struct client *c)
+{
+  if (c->sendqStart <= c->sendqEnd) {
+    return (c->sendqEnd - c->sendqStart);
+  } else {
+    return ((c->sendqEnd - c->sendq) + (c->sendq + SENDQ_MAX - c->sendqStart));
+  }
+}
+
+static void initClient(struct client *c, int fd)
+{
+  // clear client struct
+  memset(c, 0, sizeof(struct client));
+  // set fd for client
+  c->fd = fd;
+  c->sendqStart = c->sendq;
+  c->sendqEnd = c->sendq;
+
+
+  /* Set the socket nonblocking.
+   * Note that fcntl(2) for F_GETFL and F_SETFL can't be
+   * interrupted by a signal. */
+  int flags;
+  if ((flags = fcntl(fd, F_GETFL)) == -1) {
+      perror("fcntl(F_GETFL)");
+      exit(EXIT_FAILURE);
+  }
+  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+      perror("fcntl(F_SETFL,O_NONBLOCK)");
+      exit(EXIT_FAILURE);
+  }
+}
+
+static void normalizeSendq(struct client *c)
+{
+  if (c->sendqEnd - c->sendq > SENDQ_MAX) {
+    fprintf(stderr, "FATAL ringbuffer flaw uQuee9pa\n");
+    exit(EXIT_FAILURE);
+  }
+  if (c->sendqEnd - c->sendq == SENDQ_MAX) {
+    c->sendqEnd = c->sendq;
+  }
+
+  if (c->sendqStart - c->sendq > SENDQ_MAX) {
+    fprintf(stderr, "FATAL ringbuffer flaw reeceSh3\n");
+    exit(EXIT_FAILURE);
+  }
+  if (c->sendqStart - c->sendq == SENDQ_MAX) {
+    c->sendqStart = c->sendq;
+  }
+}
+
+static int flushClient(struct client *c)
+{
+  static int64_t byteCounter;
+  int debug = 0;
+  int toWrite = sendqLen(c);
+  if (c->sendqStart + toWrite > c->sendq + SENDQ_MAX) {
+    // if the sendq wraps around, only send() the start located at the end of the buffer
+    toWrite = c->sendq + SENDQ_MAX - c->sendqStart;
+  }
+
+  if (toWrite == 0) {
+    //c->last_flush = now;
+    return 0;
+  }
+
+  int bytesWritten = send(c->fd, c->sendqStart, toWrite, MSG_NOSIGNAL);
+  int err = errno;
+
+  // If we get -1, it's only fatal if it's not EAGAIN/EWOULDBLOCK
+  if (bytesWritten < 0 && (err == EAGAIN || err == EWOULDBLOCK)) {
+    //printf("block\n");
+    return 0;
+  }
+  if (bytesWritten < 0) {
+    // send error
+    perror("send ");
+    return -1;
+  }
+  if (bytesWritten > 0) {
+    // Advance buffer
+    c->sendqStart += bytesWritten;
+    normalizeSendq(c);
+  }
+
+  //printf("sent %d\n", bytesWritten);
+  return bytesWritten;
+}
+
 int main(int argc, char *argv[])
 {
   int fd, i;
   int sock_server, sock_client;
   volatile void *cfg, *sts, *fifo;
   volatile uint8_t *rx_rst, *rx_sel;
-  volatile uint16_t *rx_rate, *rd_cntr, *wr_cntr;
+  volatile uint16_t *rx_rate, *rx_cntr;
   volatile uint32_t *rx_freq;
   struct sockaddr_in addr;
   struct control ctrl;
@@ -46,18 +162,23 @@ int main(int argc, char *argv[])
   void *buffer;
   int yes = 1;
   uint64_t us, usp;
-	struct timespec start;
-  uint64_t us2, usp2;
-	struct timespec end;
-  socklen_t optlen;
 
-  #define FULLBUF 32768
-  #define TXBUF FULLBUF/2
-  #define BILLION 1000000000L
+  if (CHUNK_SIZE/4 > FIFO_WORDS / 2) {
+    printf("chunk size / 4 %d should be less than half of full FIFO size %d", CHUNK_SIZE/4, FIFO_WORDS);
+    return -1;
+  }
 
-  printf("%d\n", sizeof(ctrl));
+  int chunkSize = CHUNK_SIZE;
 
-  if((buffer = malloc(TXBUF*4)) == NULL)
+  printf("\nfifo words %d\nchunk bytes %d\nqueue bytes %d\n", FIFO_WORDS, CHUNK_SIZE, SENDQ_MAX);
+
+  struct client *cl = malloc(sizeof(struct client));
+  if (cl == NULL) {
+    perror("malloc");
+    return EXIT_FAILURE;
+  }
+
+  if((buffer = malloc(chunkSize)) == NULL)
   {
     perror("malloc");
     return EXIT_FAILURE;
@@ -78,8 +199,7 @@ int main(int argc, char *argv[])
   rx_rate = (uint16_t *)(cfg + 2);
   rx_freq = (uint32_t *)(cfg + 4);
 
-  rd_cntr = (uint16_t *)(sts + 0);
-  wr_cntr = (uint16_t *)(sts + 2);
+  rx_cntr = (uint16_t *)(sts + 0);
 
   if((sock_server = socket(AF_INET, SOCK_STREAM, 0)) < 0)
   {
@@ -87,7 +207,7 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
-  setsockopt(sock_server, SOL_SOCKET, SO_REUSEADDR, (void *)&yes , sizeof(yes));
+  setsockopt(sock_server, SOL_SOCKET, SO_REUSEADDR, (void *)&yes, sizeof(yes));
 
   /* setup listening address */
   memset(&addr, 0, sizeof(addr));
@@ -118,19 +238,10 @@ int main(int argc, char *argv[])
       perror("accept");
       return EXIT_FAILURE;
     }
-    optlen = sizeof(size);
-    getsockopt(sock_client, SOL_SOCKET, SO_SNDBUF, &size, &optlen);
-    printf("%d\n", size);
 
-    size = FULLBUF * 32 * 4;
-    setsockopt(sock_client, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
-    printf("%d\n", size);
+    initClient(cl, sock_client);
 
-    getsockopt(sock_client, SOL_SOCKET, SO_SNDBUF, &size, &optlen);
-    printf("%d\n", size);
-
-    int yes = 1;
-    int result = setsockopt(sock_client, IPPROTO_TCP, TCP_CORK, (char *) &yes, sizeof(int));
+    int64_t bytesDropped = 0;
 
     signal(SIGINT, signal_handler);
 
@@ -138,15 +249,18 @@ int main(int argc, char *argv[])
 
     while(!interrupted)
     {
-      clock_gettime(CLOCK_MONOTONIC, &start);
       usp = us;
-      us = (BILLION * start.tv_sec + start.tv_nsec)/1000;
-
-      if(ioctl(sock_client, FIONREAD, &size) < 0) break;
-
+      us = microtime();
+      if(ioctl(sock_client, FIONREAD, &size) < 0) {
+        fprintf(stderr, "fionread break\n");
+        break;
+      }
       if(size >= sizeof(struct control))
       {
-        if(recv(sock_client, (char *)&ctrl, sizeof(struct control), MSG_WAITALL) < 0) break;
+        if(recv(sock_client, (char *)&ctrl, sizeof(struct control), MSG_WAITALL) < 0) {
+          fprintf(stderr, "recv break\n");
+          break;
+        }
 
         /* set inputs */
         *rx_sel = ctrl.inps & 0xff;
@@ -161,34 +275,47 @@ int main(int argc, char *argv[])
         }
       }
 
-      if(*rd_cntr >= FULLBUF)
+      if(*rx_cntr >= FIFO_WORDS)
       {
-        printf("reset %d %d %lld\n", *rd_cntr, *wr_cntr, us-usp);
-        perror("reset");
+        printf("reset %lld\n", us-usp);
         *rx_rst &= ~1;
         *rx_rst |= 1;
       }
 
-      if(*rd_cntr >= TXBUF)
+      if(*rx_cntr >= chunkSize/4)
       {
-        printf("send %d %d %lld\n", *rd_cntr, *wr_cntr, us - usp);
-        memcpy(buffer, fifo, TXBUF*4);
-        printf("send2 %d %d %lld\n", *rd_cntr, *wr_cntr, us - usp);
-
-        clock_gettime(CLOCK_MONOTONIC, &end);
-        usp2 = (BILLION * end.tv_sec + end.tv_nsec) / 1000;
-        if(send(sock_client, buffer, TXBUF*4, MSG_NOSIGNAL) < 0) {
-          printf("break");
-          break;
+        //printf("send %d\n", *rx_cntr);
+        if(sendqLen(cl) + chunkSize >= SENDQ_MAX) {
+          bytesDropped += chunkSize;
+          static int64_t antiSpam;
+          int64_t now = microtime();
+          if (now > antiSpam) {
+            fprintf(stderr, "dropped kBytes: %9.0f\n", bytesDropped / 1024.0);
+            antiSpam = now + 10 * 1000 * 1000LL;
+          }
+          // sendq is full, drop this chunk by ??? reading from the fifo ???
+          // the var buffer is not used anymore except to discard the data
+          memcpy(buffer, fifo, chunkSize);
+        } else {
+          // copy chunk into the sendq
+          memcpy(cl->sendqEnd, fifo, chunkSize);
+          // advance buffer
+          cl->sendqEnd += chunkSize;
+          normalizeSendq(cl);
         }
-        clock_gettime(CLOCK_MONOTONIC, &end);
-        us2 = (BILLION * end.tv_sec + end.tv_nsec) / 1000;
-        printf("send3 %d %d %lld\n", *rd_cntr, *wr_cntr, us2 - usp2);
       }
       else
       {
         usleep(500);
       }
+
+      if (flushClient(cl) < 0) {
+        break;
+      }
+    }
+
+    if (!interrupted) {
+      fprintf(stderr, "disconnected\n");
     }
 
     signal(SIGINT, SIG_DFL);
