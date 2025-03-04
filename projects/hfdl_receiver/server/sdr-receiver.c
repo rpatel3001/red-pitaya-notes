@@ -46,11 +46,11 @@ int64_t microtime(void) {
     return mst;
 }
 
-#define CHUNK_SAMPLES (NUMCHANS * 256)
+#define CHUNK_SAMPLES (NUMCHANS * 512)
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 // send q must be multiple of CHUNK_BYTES
 // writes into send q must always be exactly CHUNK_BYTES big
-#define SENDQ_MAX (256 * 1024 * 1024 / CHUNK_BYTES * CHUNK_BYTES)
+#define SENDQ_MAX (96 * 1024 * 1024 / CHUNK_BYTES * CHUNK_BYTES)
 struct client
 {
   unsigned char sendq[SENDQ_MAX];  // Write buffer - allocated later
