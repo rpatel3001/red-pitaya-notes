@@ -22,9 +22,14 @@
 #define NUMCHANS 12
 #define TCP_PORT 1001
 
+// pretty sure fifo bytes should not be changed
+// also needs to be a multiple of system pagesize but that's usually 4K
+// rpi5 uses 16K pagesize, apple uses 64K, so 128K is still a multiple
+// should be fine
+#define FIFO_BYTES 128 * 1024
+
 #define SAMPLE_SIZE 4 // in bytes
-#define FIFO_SAMPLES 32768
-#define FIFO_BYTES (SAMPLE_SIZE * FIFO_SAMPLES)
+#define FIFO_SAMPLES (FIFO_BYTES / SAMPLE_SIZE)
 
 struct control
 {
