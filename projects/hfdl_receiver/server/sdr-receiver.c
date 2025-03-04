@@ -168,7 +168,7 @@ int main(int argc, char *argv[])
   uint32_t size, n;
   void *buffer;
   int yes = 1;
-  uint64_t us, usp;
+  int64_t us, usp;
 
   if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
     fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
