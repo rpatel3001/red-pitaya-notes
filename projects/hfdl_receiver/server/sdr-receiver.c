@@ -348,8 +348,8 @@ int main(int argc, char *argv[])
 
       if(rx_samples >= FIFO_SAMPLES)
       {
-        fprintf(stderr, "reset %lld\n", last_iteration_us);
-        fprintf(stderr, "%6d %6d %6d\n", rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
+        fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
+                last_iteration_us, rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
         *rx_rst &= ~1;
         *rx_rst |= 1;
         rx_samples = 0;
