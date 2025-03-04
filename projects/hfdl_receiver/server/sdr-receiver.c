@@ -137,7 +137,7 @@ static int flushClient(struct client *c, int limit)
 
   // If we get -1, it's only fatal if it's not EAGAIN/EWOULDBLOCK
   if (bytesWritten < 0 && (err == EAGAIN || err == EWOULDBLOCK)) {
-    //printf("block\n");
+    //fprintf(stderr, "block\n");
     return 0;
   }
   if (bytesWritten < 0) {
@@ -151,7 +151,7 @@ static int flushClient(struct client *c, int limit)
     normalizeSendq(c);
   }
 
-  //printf("sent %d\n", bytesWritten);
+  //fprintf(stderr, "sent %d\n", bytesWritten);
   return bytesWritten;
 }
 
@@ -171,11 +171,11 @@ int main(int argc, char *argv[])
   uint64_t us, usp;
 
   if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
-    printf("chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
+    fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
     return -1;
   }
 
-  printf("\nfifo words %d\nchunk bytes %d\nqueue bytes %d\n", FIFO_SAMPLES, CHUNK_BYTES, SENDQ_MAX);
+  fprintf(stderr, "\nfifo words %d\nchunk bytes %d\nqueue bytes %d\n", FIFO_SAMPLES, CHUNK_BYTES, SENDQ_MAX);
 
   struct client *cl = malloc(sizeof(struct client));
   if (cl == NULL) {
@@ -282,14 +282,14 @@ int main(int argc, char *argv[])
 
       if(*rx_cntr >= FIFO_SAMPLES)
       {
-        printf("reset %lld\n", us-usp);
+        fprintf(stderr, "reset %lld\n", us-usp);
         *rx_rst &= ~1;
         *rx_rst |= 1;
       }
 
       if(*rx_cntr >= CHUNK_SAMPLES)
       {
-        //printf("send %d\n", *rx_cntr);
+        //fprintf(stderr, "send %d\n", *rx_cntr);
         if(sendqLen(cl) + CHUNK_BYTES >= SENDQ_MAX) {
           bytesDropped += CHUNK_BYTES;
           static int64_t antiSpam;
