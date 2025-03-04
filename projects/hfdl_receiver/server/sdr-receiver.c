@@ -17,7 +17,9 @@
 #define NUMCHANS 12
 #define TCP_PORT 1001
 
-#define FIFO_WORDS 32768
+#define SAMPLE_SIZE 4 // in bytes
+#define FIFO_SAMPLES 32768
+#define FIFO_BYTES (SAMPLE_SIZE * FIFO_SAMPLES)
 
 struct control
 {
@@ -44,16 +46,17 @@ int64_t microtime(void) {
     return mst;
 }
 
-#define CHUNK_SIZE (NUMCHANS * 2 * 2 * 256)
-// send q must be multiple of chunkSize
-// writes into send q must always be exactly chunkSize big
-#define SENDQ_MAX (8 * 1024 * 1024 / CHUNK_SIZE * CHUNK_SIZE)
+#define CHUNK_SAMPLES (NUMCHANS * 256)
+#define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
+// send q must be multiple of CHUNK_BYTES
+// writes into send q must always be exactly CHUNK_BYTES big
+#define SENDQ_MAX (8 * 1024 * 1024 / CHUNK_BYTES * CHUNK_BYTES)
 struct client
 {
-  int fd; // File descriptor
+  unsigned char sendq[SENDQ_MAX];  // Write buffer - allocated later
   unsigned char *sendqStart;
   unsigned char *sendqEnd; // where the data in the sendQ starts
-  unsigned char sendq[SENDQ_MAX];  // Write buffer - allocated later
+  int fd; // File descriptor
   int64_t last_flush;
   int64_t last_send;
 };
@@ -163,14 +166,12 @@ int main(int argc, char *argv[])
   int yes = 1;
   uint64_t us, usp;
 
-  if (CHUNK_SIZE/4 > FIFO_WORDS / 2) {
-    printf("chunk size / 4 %d should be less than half of full FIFO size %d", CHUNK_SIZE/4, FIFO_WORDS);
+  if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
+    printf("chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
     return -1;
   }
 
-  int chunkSize = CHUNK_SIZE;
-
-  printf("\nfifo words %d\nchunk bytes %d\nqueue bytes %d\n", FIFO_WORDS, CHUNK_SIZE, SENDQ_MAX);
+  printf("\nfifo words %d\nchunk bytes %d\nqueue bytes %d\n", FIFO_SAMPLES, CHUNK_BYTES, SENDQ_MAX);
 
   struct client *cl = malloc(sizeof(struct client));
   if (cl == NULL) {
@@ -178,7 +179,7 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
-  if((buffer = malloc(chunkSize)) == NULL)
+  if((buffer = malloc(CHUNK_BYTES)) == NULL)
   {
     perror("malloc");
     return EXIT_FAILURE;
@@ -192,7 +193,7 @@ int main(int argc, char *argv[])
 
   cfg = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x40000000);
   sts = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x41000000);
-  fifo = mmap(NULL, 32*sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x42000000);
+  fifo = mmap(NULL, FIFO_BYTES, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x42000000);
 
   rx_rst = (uint8_t *)(cfg + 0);
   rx_sel = (uint8_t *)(cfg + 1);
@@ -275,18 +276,18 @@ int main(int argc, char *argv[])
         }
       }
 
-      if(*rx_cntr >= FIFO_WORDS)
+      if(*rx_cntr >= FIFO_SAMPLES)
       {
         printf("reset %lld\n", us-usp);
         *rx_rst &= ~1;
         *rx_rst |= 1;
       }
 
-      if(*rx_cntr >= chunkSize/4)
+      if(*rx_cntr >= CHUNK_SAMPLES)
       {
         //printf("send %d\n", *rx_cntr);
-        if(sendqLen(cl) + chunkSize >= SENDQ_MAX) {
-          bytesDropped += chunkSize;
+        if(sendqLen(cl) + CHUNK_BYTES >= SENDQ_MAX) {
+          bytesDropped += CHUNK_BYTES;
           static int64_t antiSpam;
           int64_t now = microtime();
           if (now > antiSpam) {
@@ -295,12 +296,12 @@ int main(int argc, char *argv[])
           }
           // sendq is full, drop this chunk by ??? reading from the fifo ???
           // the var buffer is not used anymore except to discard the data
-          memcpy(buffer, fifo, chunkSize);
+          memcpy(buffer, fifo, CHUNK_BYTES);
         } else {
           // copy chunk into the sendq
-          memcpy(cl->sendqEnd, fifo, chunkSize);
+          memcpy(cl->sendqEnd, fifo, CHUNK_BYTES);
           // advance buffer
-          cl->sendqEnd += chunkSize;
+          cl->sendqEnd += CHUNK_BYTES;
           normalizeSendq(cl);
         }
       }
