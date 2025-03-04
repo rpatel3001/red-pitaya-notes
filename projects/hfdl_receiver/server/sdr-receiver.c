@@ -50,7 +50,7 @@ int64_t microtime(void) {
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 // send q must be multiple of CHUNK_BYTES
 // writes into send q must always be exactly CHUNK_BYTES big
-#define SENDQ_MAX (8 * 1024 * 1024 / CHUNK_BYTES * CHUNK_BYTES)
+#define SENDQ_MAX (256 * 1024 * 1024 / CHUNK_BYTES * CHUNK_BYTES)
 struct client
 {
   unsigned char sendq[SENDQ_MAX];  // Write buffer - allocated later
@@ -113,7 +113,7 @@ static void normalizeSendq(struct client *c)
   }
 }
 
-static int flushClient(struct client *c)
+static int flushClient(struct client *c, int limit)
 {
   static int64_t byteCounter;
   int debug = 0;
@@ -126,6 +126,10 @@ static int flushClient(struct client *c)
   if (toWrite == 0) {
     //c->last_flush = now;
     return 0;
+  }
+
+  if (toWrite > limit) {
+      toWrite = limit;
   }
 
   int bytesWritten = send(c->fd, c->sendqStart, toWrite, MSG_NOSIGNAL);
@@ -310,7 +314,11 @@ int main(int argc, char *argv[])
         usleep(500);
       }
 
-      if (flushClient(cl) < 0) {
+      // to ensure flushClient doesn't take super long,
+      // limit each send syscall to 16x the chunk size
+      // this means we can send on the network 16x faster than we get data
+      // enough to catch up quickly
+      if (flushClient(cl, 16 * CHUNK_BYTES) < 0) {
         break;
       }
     }
