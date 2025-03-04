@@ -37,7 +37,6 @@ def read_and_separate_data(device_ip, device_port):
             data = s.recv(BUFFER_SIZE * NUM_CHANNELS * 2 * np.dtype(RX_DTYPE).itemsize, socket.MSG_WAITALL)
             if not data:
                 break  # Exit the loop if no data is received
-            continue
 
             # Convert the data to a numpy array of integers (assuming 16-bit data for this example)
             data_array = np.frombuffer(data, dtype=RX_DTYPE)
