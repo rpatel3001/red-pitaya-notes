@@ -46,7 +46,7 @@ int64_t microtime(void) {
     return mst;
 }
 
-#define CHUNK_SAMPLES (NUMCHANS * 1024)
+#define CHUNK_SAMPLES (NUMCHANS * 256)
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 // send q must be multiple of CHUNK_BYTES
 // writes into send q must always be exactly CHUNK_BYTES big
@@ -271,7 +271,6 @@ int main(int argc, char *argv[])
       us = microtime();
       int64_t last_iteration_us = us - usp;
 
-      #ifndef TEST
       if(ioctl(sock_client, FIONREAD, &size) < 0) {
         fprintf(stderr, "fionread break\n");
         break;
@@ -295,15 +294,16 @@ int main(int argc, char *argv[])
           rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << 30) + 0.5);
         }
       }
-      #endif
 
       #ifdef TEST
-      // simulate 25 MByte/s
-      *rx_cntr += 0.5 * last_iteration_us / SAMPLE_SIZE;
+      // simulate 50 MByte/s
+      *rx_cntr += 50 * last_iteration_us / SAMPLE_SIZE;
       #endif
 
       rx_samples = *rx_cntr;
-      if (last_iteration_us > 500) {
+
+      // some debugging for long iterations of the loop
+      if (last_iteration_us > 5000) {
         fprintf(stderr, "long %lld\n", last_iteration_us);
         fprintf(stderr, "%6d %6d %6d\n", rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
       }
@@ -317,7 +317,7 @@ int main(int argc, char *argv[])
         //exit(EXIT_FAILURE);
       }
 
-      if(rx_samples >= CHUNK_SAMPLES)
+      while(rx_samples >= CHUNK_SAMPLES)
       {
         if(sendqLen(cl) + CHUNK_BYTES >= SENDQ_MAX) {
           bytesDropped += CHUNK_BYTES;
@@ -337,27 +337,26 @@ int main(int argc, char *argv[])
           cl->sendqEnd += CHUNK_BYTES;
           normalizeSendq(cl);
         }
-        #ifdef TEST
         rx_samples -= CHUNK_SAMPLES;
+        #ifdef TEST
+        *rx_cntr -= CHUNK_SAMPLES;
         #endif
       }
-      else
-      {
-        // to ensure flushClient doesn't take super long,
-        // limit each send syscall to 16x the chunk size
-        // this means we can send on the network 4x faster than we get data
-        // enough to catch up quickly
-        int bytesWritten = flushClient(cl, 4 * CHUNK_BYTES);
-        if (bytesWritten < 0) {
-          break;
-        }
-        // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
-        if (bytesWritten == 0) {
-          usleep(50);
-        }
-        // emptying the FIFO is top priority, it is immediately re-checked after reading out of it
-        // thus we only sleep or flush the client buffer if there isn't enough data in the FIFO
+
+      // to ensure flushClient doesn't take super long,
+      // limit each send syscall to 16x the chunk size
+      // this means we can send on the network 8x faster than we get data
+      // enough to catch up quickly
+      int bytesWritten = flushClient(cl, 8 * CHUNK_BYTES);
+      if (bytesWritten < 0) {
+        break;
       }
+      // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
+      if (bytesWritten == 0) {
+        usleep(500);
+      }
+      // emptying the FIFO is top priority, it is immediately re-checked after reading out of it
+      // thus we only sleep or flush the client buffer if there isn't enough data in the FIFO
     }
 
     fprintf(stderr, "disconnected\n");
