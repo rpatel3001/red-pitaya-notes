@@ -364,20 +364,19 @@ int main(int argc, char *argv[])
 
       while(rx_samples >= CHUNK_SAMPLES)
       {
-        if (sendqLen(cl) < SENDQ_MAX / 2) {
+        int wasDropping = dropping;
+        int dropUntil = SENDQ_MAX / 2;
+        if (sendqLen(cl) < dropUntil) {
           dropping = 0;
         }
         if (sendqLen(cl) + CHUNK_BYTES >= SENDQ_MAX) {
           dropping = 1;
         }
         if(dropping) {
-          bytesDropped += CHUNK_BYTES;
-          static int64_t antiSpam;
-          int64_t now = microtime();
-          if (now > antiSpam) {
-            fprintf(stderr, "dropped kBytes: %9.0f\n", bytesDropped / 1024.0);
-            antiSpam = now + 1 * 1000 * 1000LL;
+          if (!wasDropping) {
+            fprintf(stderr, "dropping at least %d MBytes, total dropped MBytes: %8d\n", dropUntil / 1024 / 1024, bytesDropped / 1024 / 1024);
           }
+          bytesDropped += CHUNK_BYTES;
           // sendq is full, drop this chunk by ??? reading from the fifo ???
           // the var buffer is not used anymore except to discard the data
           memcpy(buffer, fifo, CHUNK_BYTES);
