@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <math.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <sys/ioctl.h>
@@ -63,6 +64,22 @@ int64_t microtime(void) {
     mst = ((int64_t) tv.tv_sec) * 1000LL * 1000LL;
     mst += tv.tv_usec;
     return mst;
+}
+
+// return elapsed time and set start_time to current time
+int64_t lapWatch(struct timespec *start_time) {
+    struct timespec end_time;
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+
+    int64_t res = ((int64_t) end_time.tv_sec * 1000UL + end_time.tv_nsec / 1000000UL)
+        - ((int64_t) start_time->tv_sec * 1000UL + start_time->tv_nsec / 1000000UL);
+
+    if (start_time->tv_sec == 0 && start_time->tv_nsec == 0) {
+        res = 0;
+    }
+
+    *start_time = end_time;
+    return res;
 }
 
 void setPriority() {
