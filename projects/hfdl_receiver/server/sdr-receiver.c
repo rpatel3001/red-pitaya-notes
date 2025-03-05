@@ -374,7 +374,7 @@ int main(int argc, char *argv[])
         }
         if(dropping) {
           if (!wasDropping) {
-            fprintf(stderr, "dropping at least %d MBytes, total dropped MBytes: %8d\n", dropUntil / 1024 / 1024, bytesDropped / 1024 / 1024);
+            fprintf(stderr, "dropping at least %d MBytes, total dropped MBytes: %8lld\n", dropUntil / 1024 / 1024, bytesDropped / 1024 / 1024);
           }
           bytesDropped += CHUNK_BYTES;
           // sendq is full, drop this chunk by ??? reading from the fifo ???
