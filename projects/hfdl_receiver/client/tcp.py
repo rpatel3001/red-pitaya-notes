@@ -24,11 +24,9 @@ def read_and_separate_data(device_ip, device_port):
         print(f"RX thread connected to {device_ip}:{device_port}")
 
         # Send the specific byte string to the receiver immediately after connecting
-        rates = {48000: 0, 96000: 1, 192000: 2, 384000: 3}
-        rate = 384000
         corr = 0
-        freqs = [3900000, 4671000, 5517000, 5655000, 6621000, 8901000, 10060000, 11286000, 13309000, 15025000, 17943000, 21963000] #2949000, 3451000,
-        connection_message = pack("<14I", 0, rates[rate], *[int((1.0 + 1e-6 * corr) * f) for f in freqs])
+        freqs = [3451000, 3950000, 4671000, 5586000, 6621000, 8901000, 10060000, 11286000, 13309000, 15075000, 17943000, 21963000] #2949000,
+        connection_message = pack("<14I", 0, 0, *[int((1.0 + 1e-6 * corr) * f) for f in freqs])
         s.settimeout(None)
         s.sendall(connection_message)
 
@@ -53,6 +51,7 @@ def read_and_separate_data(device_ip, device_port):
 def transmit_channel_data(channel_idx, transmit_port):
     while True:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(('0.0.0.0', transmit_port + channel_idx))  # Bind to a unique port per channel
             s.setblocking(False)
             s.listen(0)

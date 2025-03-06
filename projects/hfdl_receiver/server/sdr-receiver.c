@@ -17,8 +17,7 @@
 #include <sys/resource.h>
 #include <sched.h>
 
-
-
+#define PHASE_BITS 29
 #define NUMCHANS 12
 #define TCP_PORT 1001
 
@@ -289,7 +288,7 @@ int main(int argc, char *argv[])
     *rx_rate = 1280;
     for(i = 0; i < NUMCHANS; ++i)
     {
-      rx_freq[i] = (uint32_t)floor(600000 / 122.88e6 * (1 << 30) + 0.5);
+      rx_freq[i] = (uint32_t)floor(600000 / 122.88e6 * (1 << PHASE_BITS) + 0.5);
     }
 
     if((sock_client = accept(sock_server, NULL, NULL)) < 0)
@@ -334,7 +333,7 @@ int main(int argc, char *argv[])
         /* set rx phase increments */
         for(i = 0; i < NUMCHANS; ++i)
         {
-          rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << 30) + 0.5);
+          rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5);
         }
       }
 
