@@ -11,7 +11,7 @@ from select import select
 
 # Constants
 RX_DTYPE = np.int16  # Data type of received data
-TX_DTYPE = np.uint8  # Data type of transmitted data
+TX_DTYPE = np.int16  # Data type of transmitted data
 
 new_freq = True
 freqs = [3451000, 3950000, 4671000, 5586000, 6621000, 8901000, 10060000, 11286000, 13309000, 15075000, 17943000, 21963000] #2949000,
@@ -96,7 +96,7 @@ def transmit_channel_data(channel_idx, transmit_port):
                             # Send the buffer's data over the socket
                             interleaved[0::2] = real_buffers[buffer_idx][channel_idx::NUM_CHANNELS]
                             interleaved[1::2] = imag_buffers[buffer_idx][channel_idx::NUM_CHANNELS]
-                            interleaved = interleaved / 2**6 * 127.5 + 127.5
+                            #interleaved = interleaved / 2**6 * 127.5 + 127.5
                             interleaved2 = (interleaved).astype(TX_DTYPE).tobytes()
                             conn.sendall(interleaved2)
 
