@@ -5,7 +5,7 @@ import queue
 import argparse
 import time
 import _thread
-from struct import pack
+from struct import pack, unpack
 from signal import signal, SIGINT
 from select import select
 
@@ -13,24 +13,28 @@ from select import select
 RX_DTYPE = np.int16  # Data type of received data
 TX_DTYPE = np.uint8  # Data type of transmitted data
 
+new_freq = True
+freqs = [3451000, 3950000, 4671000, 5586000, 6621000, 8901000, 10060000, 11286000, 13309000, 15075000, 17943000, 21963000] #2949000,
+
 # Receiver thread function to read and separate data into channels
 def read_and_separate_data(device_ip, device_port):
+    global new_freq
+
     write_index = 0  # Track the index of the buffer being written to
 
     # Open a socket to the device
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(5)
         s.connect((device_ip, device_port))
+        s.settimeout(None)
         print(f"RX thread connected to {device_ip}:{device_port}")
 
-        # Send the specific byte string to the receiver immediately after connecting
-        corr = 0
-        freqs = [11285500, 13307500, 10060000, 17943000, 21962500, 15025000, 8901000, 4670500, 5611000, 6620500, 3900000, 2978500] #2949000,
-        connection_message = pack("<14I", 0, 0, *[int((1.0 + 1e-6 * corr) * f) for f in freqs])
-        s.settimeout(None)
-        s.sendall(connection_message)
-
         while True:
+            if new_freq:
+                new_freq = False
+                # Send the specific byte string to the receiver immediately after connecting
+                connection_message = pack("<14I", 0, 0, *[int(f) for f in freqs])
+                s.sendall(connection_message)
             # Read a chunk of interleaved data (buffer is always full due to MSG_WAITALL)
             data = s.recv(BUFFER_SIZE * NUM_CHANNELS * 2 * np.dtype(RX_DTYPE).itemsize, socket.MSG_WAITALL)
             if not data:
@@ -49,6 +53,8 @@ def read_and_separate_data(device_ip, device_port):
 
 # Transmit thread function to send data over a socket for each channel
 def transmit_channel_data(channel_idx, transmit_port):
+    global new_freq
+
     while True:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -78,6 +84,11 @@ def transmit_channel_data(channel_idx, transmit_port):
                     interleaved = np.zeros((BUFFER_SIZE * np.dtype(RX_DTYPE).itemsize,), dtype=RX_DTYPE)
                     interleaved2 = np.zeros((BUFFER_SIZE * np.dtype(RX_DTYPE).itemsize,), dtype=TX_DTYPE)
                     while True:
+                        rdy, _, _ = select([conn], [], [], 0)
+                        if rdy:
+                            freqs[channel_idx] = unpack("<1I", conn.recv(4, socket.MSG_WAITALL))[0]
+                            new_freq = True
+
                         # Wait for a full buffer index to be pushed to the queue (with timeout)
                         try:
                             buffer_idx = buffer_queues[channel_idx].get(timeout=1)
