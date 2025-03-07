@@ -18,7 +18,7 @@
 #include <sched.h>
 
 #define PHASE_BITS 29
-#define NUMCHANS 12
+#define NUMCHANS 13
 #define TCP_PORT 1001
 
 // pretty sure fifo bytes should not be changed

@@ -14,7 +14,6 @@ RX_DTYPE = np.int16  # Data type of received data
 TX_DTYPE = np.int16  # Data type of transmitted data
 
 new_freq = True
-freqs = [3451000, 3950000, 4671000, 5586000, 6621000, 8901000, 10060000, 11286000, 13309000, 15075000, 17943000, 21963000] #2949000,
 
 # Receiver thread function to read and separate data into channels
 def read_and_separate_data(device_ip, device_port):
@@ -33,7 +32,7 @@ def read_and_separate_data(device_ip, device_port):
             if new_freq:
                 new_freq = False
                 # Send the specific byte string to the receiver immediately after connecting
-                connection_message = pack("<14I", 0, 0, *[int(f) for f in freqs])
+                connection_message = pack(f"<{len(freqs)+2}I", 0, 0, *[int(f) for f in freqs])
                 s.sendall(connection_message)
             # Read a chunk of interleaved data (buffer is always full due to MSG_WAITALL)
             data = s.recv(BUFFER_SIZE * NUM_CHANNELS * 2 * np.dtype(RX_DTYPE).itemsize, socket.MSG_WAITALL)
@@ -144,7 +143,7 @@ def parse_arguments():
     parser.add_argument('--receive_port', '-r', type=int, default=1001, help="Port to receive data from the device (default: 1001)")
     parser.add_argument('--transmit_port', '-t', type=int, default=9000, help="Base port for transmitting data (default: 9000)")
     parser.add_argument('--buffer_size', '-b', type=int, default=1024, help="Size of each buffer (default: 1024)")
-    parser.add_argument('--num_channels', '-n', type=int, default=12, help="Number of channels (default: 12)")
+    parser.add_argument('--num_channels', '-n', type=int, default=13, help="Number of channels (default: 13)")
     parser.add_argument('--num_buffers', '-m', type=int, default=10, help="Number of buffers per channel (default: 10)")
     return parser.parse_args()
 
@@ -163,6 +162,7 @@ if __name__ == '__main__':
     BUFFER_SIZE = args.buffer_size
     NUM_CHANNELS = args.num_channels
     NUM_BUFFERS = args.num_buffers
+    freqs = [1000000]*NUM_CHANNELS
 
     # Start the data stream
     start_data_stream(DEVICE_IP, DEVICE_PORT, TRANSMIT_PORT)
