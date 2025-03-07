@@ -87,6 +87,7 @@ def transmit_channel_data(channel_idx, transmit_port):
                         rdy, _, _ = select([conn], [], [], 0)
                         if rdy:
                             freqs[channel_idx] = unpack("<1I", conn.recv(4, socket.MSG_WAITALL))[0]
+                            print(f"Channel {channel_idx} set to frequency {freqs[channel_idx]}")
                             new_freq = True
 
                         # Wait for a full buffer index to be pushed to the queue (with timeout)
