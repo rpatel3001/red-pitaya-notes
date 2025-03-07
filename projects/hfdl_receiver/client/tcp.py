@@ -25,7 +25,7 @@ def read_and_separate_data(device_ip, device_port):
 
         # Send the specific byte string to the receiver immediately after connecting
         corr = 0
-        freqs = [3451000, 3950000, 4671000, 5586000, 6621000, 8901000, 10060000, 11286000, 13309000, 15075000, 17943000, 21963000] #2949000,
+        freqs = [11285500, 13307500, 10060000, 17943000, 21962500, 15025000, 8901000, 4670500, 5611000, 6620500, 3900000, 2978500] #2949000,
         connection_message = pack("<14I", 0, 0, *[int((1.0 + 1e-6 * corr) * f) for f in freqs])
         s.settimeout(None)
         s.sendall(connection_message)
