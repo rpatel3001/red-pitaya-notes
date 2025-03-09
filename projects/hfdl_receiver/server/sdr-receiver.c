@@ -333,6 +333,9 @@ int main(int argc, char *argv[])
         *rx_rst &= ~1;
         *rx_rst |= 1;
         rx_samples = 0;
+        #ifdef TEST
+        *rx_cntr = 0;
+        #endif
 
         // resets really shouldn't happen but they cause issues so just drop the network connection and start over
         // make this easy to toggle
