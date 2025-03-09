@@ -327,7 +327,7 @@ int main(int argc, char *argv[])
       if(rx_samples >= FIFO_SAMPLES)
       {
         fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
-                last_iteration_us, rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
+                last_iteration_us, rx_samples, FIFO_SAMPLES);
         fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
                 readTime, flushTime, recvTime, sleepTime);
         *rx_rst &= ~1;
