@@ -314,37 +314,9 @@ int main(int argc, char *argv[])
     int64_t readTime = 0;
     int64_t flushTime = 0;
     int64_t sleepTime = 0;
+    int noReadCounter = 10;
     while(!interrupted)
     {
-
-      if(ioctl(sock_client, FIONREAD, &size) < 0) {
-        fprintf(stderr, "fionread break\n");
-        break;
-      }
-      if(size >= sizeof(struct control))
-      {
-        if(recv(sock_client, (char *)&ctrl, sizeof(struct control), MSG_WAITALL) < 0) {
-          fprintf(stderr, "recv break\n");
-          break;
-        }
-
-        /* set inputs */
-        *rx_sel = ctrl.inps & 0xff;
-
-        /* set rx sample rate */
-        *rx_rate = rates[ctrl.rate & 3];
-
-        printf("got new frequencies\n");
-        /* set rx phase increments */
-        for(i = 0; i < NUMCHANS; ++i)
-        {
-          printf("freq %d, phase %d\n", ctrl.freq[i], (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5));
-          rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5);
-        }
-      }
-
-      recvTime = lapWatch(&watch);
-
       #ifdef TEST
       // simulate 25 MByte/s
       *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
@@ -356,8 +328,8 @@ int main(int argc, char *argv[])
       {
         fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
                 last_iteration_us, rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
-        fprintf(stderr, "timers were: recvTime %5lld readTime %5lld flushTime %5lld sleepTime %5lld\n",
-                recvTime, readTime, flushTime, sleepTime);
+        fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
+                readTime, flushTime, recvTime, sleepTime);
         *rx_rst &= ~1;
         *rx_rst |= 1;
         rx_samples = 0;
@@ -415,10 +387,46 @@ int main(int argc, char *argv[])
 
       int noSleep = 0;
 
-      // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
-      if (bytesWritten == 0) {
+      if (bytesWritten > 0) {
+        // omit sleep if progress is being made emptying our buffer to the OS network buffer
         noSleep = 1;
       }
+
+      // only check socket read every 10 iterations, rougly 5 ms
+      // never hurts to use a couple less syscalls
+      if (++noReadCounter >= 10) {
+        noSleep = 1; // omit sleep when reading from network
+        noReadCounter = 0;
+        size = 0;
+        if(ioctl(sock_client, FIONREAD, &size) < 0) {
+          fprintf(stderr, "fionread break\n");
+          break;
+        }
+        if(size >= sizeof(struct control))
+        {
+          if(recv(sock_client, (char *)&ctrl, sizeof(struct control), MSG_WAITALL) < 0) {
+            fprintf(stderr, "recv break\n");
+            break;
+          }
+
+          /* set inputs */
+          *rx_sel = ctrl.inps & 0xff;
+
+          /* set rx sample rate */
+          *rx_rate = rates[ctrl.rate & 3];
+
+          printf("got new frequencies\n");
+          /* set rx phase increments */
+          for(i = 0; i < NUMCHANS; ++i)
+          {
+            printf("freq %d, phase %d\n", ctrl.freq[i], (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5));
+            rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5);
+          }
+        }
+      }
+
+      recvTime = lapWatch(&watch);
+
       if (!noSleep) {
         usleep(500);
       }
