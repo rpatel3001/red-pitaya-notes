@@ -60,23 +60,32 @@ struct client
   int64_t last_send;
 };
 
-int64_t microtime(void) {
+static int64_t microtime(void) {
     struct timeval tv;
     int64_t mst;
 
     gettimeofday(&tv, NULL);
-    mst = ((int64_t) tv.tv_sec) * 1000LL * 1000LL;
+    mst = ((int64_t) tv.tv_sec) * (1000LL * 1000LL);
     mst += tv.tv_usec;
     return mst;
 }
 
+static void emitTime(FILE *stream) {
+    int64_t now = microtime();
+    int64_t seconds = 1000 * 1000;
+    fprintf(stream, "%02d:%02d:%06.3fZ ",
+            (int) ((now / (3600 * seconds)) % 24),
+            (int) ((now / (60 * seconds)) % 60),
+            (now % (60 * seconds)) / (1000.0 * 1000.0));
+}
+
 /* record current monotonic time in start_time */
-void startWatch(struct timespec *start_time) {
+static void startWatch(struct timespec *start_time) {
     clock_gettime(CLOCK_MONOTONIC, start_time);
 }
 
 // return elapsed time and set start_time to current time
-int64_t lapWatch(struct timespec *start_time) {
+static int64_t lapWatch(struct timespec *start_time) {
     struct timespec end_time;
     clock_gettime(CLOCK_MONOTONIC, &end_time);
 
@@ -87,7 +96,7 @@ int64_t lapWatch(struct timespec *start_time) {
     return res;
 }
 
-void setPriority() {
+static void setPriority() {
     int pid = 0; // this process
 
     setpriority(PRIO_PROCESS, pid, -20);
@@ -181,6 +190,7 @@ static int flushClient(struct client *c, int limit)
   }
   if (bytesWritten < 0) {
     // send error
+    emitTime(stderr);
     perror("send ");
     return -1;
   }
@@ -211,13 +221,16 @@ int main(int argc, char *argv[])
   int rx_samples = 0;
   struct timespec watch;
   int dropping = 0; // dropping data until buffer is half empty
+                    //
+  emitTime(stderr);
+  fprintf(stderr, "startup\n");
 
   if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
     fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
     return -1;
   }
 
-  fprintf(stderr, "\nfifo samples %d\nchunk samples %d\nqueue size in chunks %d\n", FIFO_SAMPLES, CHUNK_SAMPLES, SENDQ_MAX / CHUNK_BYTES);
+  fprintf(stderr, "fifo samples %d\nchunk samples %d\nqueue size in chunks %d\n", FIFO_SAMPLES, CHUNK_SAMPLES, SENDQ_MAX / CHUNK_BYTES);
 
   struct client *cl = malloc(sizeof(struct client));
   if (cl == NULL) {
@@ -303,6 +316,7 @@ int main(int argc, char *argv[])
 
     signal(SIGINT, signal_handler);
 
+    emitTime(stderr);
     fprintf(stderr, "connected\n");
 
     *rx_rst |= 1;
@@ -326,6 +340,7 @@ int main(int argc, char *argv[])
 
       if(rx_samples >= FIFO_SAMPLES)
       {
+        emitTime(stderr);
         fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
                 last_iteration_us, rx_samples, FIFO_SAMPLES);
         fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
@@ -350,6 +365,7 @@ int main(int argc, char *argv[])
         }
         if(dropping) {
           if (!wasDropping) {
+            emitTime(stderr);
             fprintf(stderr, "dropping at least %d MBytes, total dropped MBytes: %8lld\n", dropUntil / 1024 / 1024, bytesDropped / 1024 / 1024);
           }
           bytesDropped += CHUNK_BYTES;
@@ -396,12 +412,14 @@ int main(int argc, char *argv[])
         noReadCounter = 0;
         size = 0;
         if(ioctl(sock_client, FIONREAD, &size) < 0) {
+          emitTime(stderr);
           fprintf(stderr, "fionread break\n");
           break;
         }
         if(size >= sizeof(struct control))
         {
           if(recv(sock_client, (char *)&ctrl, sizeof(struct control), MSG_WAITALL) < 0) {
+            emitTime(stderr);
             fprintf(stderr, "recv break\n");
             break;
           }
@@ -433,11 +451,18 @@ int main(int argc, char *argv[])
       last_iteration_us = recvTime + readTime + flushTime + sleepTime;
     }
 
+    // make sure the client is closed, if this errors it's fine
+    close(sock_client);
+
+    emitTime(stderr);
     fprintf(stderr, "disconnected\n");
 
     signal(SIGINT, SIG_DFL);
     close(sock_client);
   }
+
+  emitTime(stderr);
+  fprintf(stderr, "exiting\n");
 
   *rx_rst &= ~1;
 
