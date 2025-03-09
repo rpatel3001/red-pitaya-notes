@@ -310,6 +310,10 @@ int main(int argc, char *argv[])
     startWatch(&watch);
     us = microtime();
     int64_t last_iteration_us = 0;
+    int64_t recvTime = 0;
+    int64_t readTime = 0;
+    int64_t flushTime = 0;
+    int64_t sleepTime = 0;
     while(!interrupted)
     {
 
@@ -339,7 +343,7 @@ int main(int argc, char *argv[])
         }
       }
 
-      int64_t recvTime = lapWatch(&watch);
+      recvTime = lapWatch(&watch);
 
       #ifdef TEST
       // simulate 25 MByte/s
@@ -352,6 +356,8 @@ int main(int argc, char *argv[])
       {
         fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
                 last_iteration_us, rx_samples, CHUNK_SAMPLES, FIFO_SAMPLES);
+        fprintf(stderr, "timers were: recvTime %5lld readTime %5lld flushTime %5lld sleepTime %5lld\n",
+                recvTime, readTime, flushTime, sleepTime);
         *rx_rst &= ~1;
         *rx_rst |= 1;
         rx_samples = 0;
@@ -394,7 +400,7 @@ int main(int argc, char *argv[])
         #endif
       }
 
-      int64_t readTime = lapWatch(&watch);
+      readTime = lapWatch(&watch);
 
       // to ensure flushClient doesn't take super long,
       // limit each send syscall to 16x the chunk size
@@ -405,20 +411,21 @@ int main(int argc, char *argv[])
         break;
       }
 
-      int64_t flushTime = lapWatch(&watch);
+      flushTime = lapWatch(&watch);
+
+      int noSleep = 0;
 
       // omit sleep if lots of progress is being made emptying our buffer to the OS network buffer
       if (bytesWritten == 0) {
+        noSleep = 1;
+      }
+      if (!noSleep) {
         usleep(500);
       }
 
-      int64_t sleepTime = lapWatch(&watch);
+      sleepTime = lapWatch(&watch);
 
       last_iteration_us = recvTime + readTime + flushTime + sleepTime;
-      if (last_iteration_us > 5000) {
-          fprintf(stderr, "not fast enough! recvTime %5lld readTime %5lld flushTime %5lld sleepTime %5lld\n",
-                  recvTime, readTime, flushTime, sleepTime);
-      }
     }
 
     fprintf(stderr, "disconnected\n");
