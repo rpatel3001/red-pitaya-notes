@@ -1,9 +1,9 @@
 CFLAGS = -O3 -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard
 
-all: sdr-receiver
+all: hfdl-receiver
 
-sdr-receiver: sdr-receiver.c
+hfdl-receiver: hfdl-receiver.c
 	gcc $(CFLAGS) -o $@ $^ -lm
 
 clean:
-	rm -f sdr-receiver
+	rm -f hfdl-receiver

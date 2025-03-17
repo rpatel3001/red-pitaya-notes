@@ -442,7 +442,8 @@ int main(int argc, char *argv[])
           /* set rx sample rate */
           *rx_rate = rates[ctrl.rate & 3];
 
-          printf("got new frequencies\n");
+          emitTime(stderr);
+          fprintf(stderr, "got new frequencies\n");
           /* set rx phase increments */
           for(i = 0; i < NUMCHANS; ++i)
           {
