@@ -4,6 +4,8 @@ import threading
 import queue
 import argparse
 import time
+import sys
+import math
 import _thread
 from struct import pack, unpack
 from signal import signal, SIGINT
@@ -15,18 +17,31 @@ TX_DTYPE = np.int16  # Data type of transmitted data
 
 new_freq = True
 
+def log(msg):
+    timestamp = (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            + ".{0:03.0f}Z ".format(math.modf(time.time())[0] * 1000)
+            )
+
+    sys.stderr.write(timestamp + msg + "\n")
+
 # Receiver thread function to read and separate data into channels
 def read_and_separate_data(device_ip, device_port):
     global new_freq
 
     write_index = 0  # Track the index of the buffer being written to
 
+    log(f"RX thread connecting to {device_ip}:{device_port}")
+
     # Open a socket to the device
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(5)
         s.connect((device_ip, device_port))
         s.settimeout(None)
-        print(f"RX thread connected to {device_ip}:{device_port}")
+        log(f"RX thread connected to {device_ip}:{device_port}")
+
+        # make sure we send the frequencies at the start of a new connection
+        new_freq = True
 
         while True:
             if new_freq:
@@ -60,7 +75,7 @@ def transmit_channel_data(channel_idx, transmit_port):
             s.bind(('0.0.0.0', transmit_port + channel_idx))  # Bind to a unique port per channel
             s.setblocking(False)
             s.listen(0)
-            print(f"Channel {channel_idx} waiting for a connection on port {transmit_port + channel_idx}")
+            log(f"Channel {channel_idx} waiting for a connection on port {transmit_port + channel_idx}")
 
             try:
                 while True:
@@ -68,7 +83,7 @@ def transmit_channel_data(channel_idx, transmit_port):
                     if rdy:
                         # Accept a client connection
                         conn, addr = s.accept()
-                        print(f"Channel {channel_idx} connected to {addr}")
+                        log(f"Channel {channel_idx} connected to {addr}")
                         break
                     else:
                         while not buffer_queues[channel_idx].empty():
@@ -78,7 +93,7 @@ def transmit_channel_data(channel_idx, transmit_port):
                     # Send the RTL0 header to the connected client
                     RTL_HEADER = b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00"  # RTL0 header to send on connect
                     conn.sendall(RTL_HEADER)
-                    print(f"Channel {channel_idx} sent header to {addr}")
+                    log(f"Channel {channel_idx} sent header to {addr}")
 
                     interleaved = np.zeros((BUFFER_SIZE * np.dtype(RX_DTYPE).itemsize,), dtype=RX_DTYPE)
                     interleaved2 = np.zeros((BUFFER_SIZE * np.dtype(RX_DTYPE).itemsize,), dtype=TX_DTYPE)
@@ -86,7 +101,7 @@ def transmit_channel_data(channel_idx, transmit_port):
                         rdy, _, _ = select([conn], [], [], 0)
                         if rdy:
                             freqs[channel_idx] = unpack("<1I", conn.recv(4, socket.MSG_WAITALL))[0]
-                            print(f"Channel {channel_idx} set to frequency {freqs[channel_idx]}")
+                            log(f"Channel {channel_idx} set to frequency {freqs[channel_idx]}")
                             new_freq = True
 
                         # Wait for a full buffer index to be pushed to the queue (with timeout)
@@ -102,13 +117,13 @@ def transmit_channel_data(channel_idx, transmit_port):
 
                         except queue.Empty:
                             # Don't print when the queue times out
-                            print(f"Empty queue in channel {channel_idx}")
+                            log(f"Empty queue in channel {channel_idx}")
                         except ValueError as e:
-                            print(f"value error: {e}")
+                            log(f"value error: {e}")
                             break
 
             except (socket.error, OSError) as e:
-                print(f"Channel {channel_idx} connection error: {e}. Re-listening...")
+                log(f"Channel {channel_idx} connection error: {e}. Re-listening...")
 
 # Main function to start the receiver and transmit threads
 def start_data_stream(device_ip, device_port, transmit_port):
