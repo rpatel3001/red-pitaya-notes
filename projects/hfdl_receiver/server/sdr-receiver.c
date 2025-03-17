@@ -73,10 +73,21 @@ static int64_t microtime(void) {
 static void emitTime(FILE *stream) {
     int64_t now = microtime();
     int64_t seconds = 1000 * 1000;
-    fprintf(stream, "%02d:%02d:%06.3fZ ",
+
+    char datebuf[16];
+    time_t epoch;
+    struct tm utc;
+
+    epoch = now / (1000 * 1000);
+    gmtime_r(&epoch, &utc);
+    strftime(datebuf, 16, "%Y-%m-%d", &utc);
+
+    fprintf(stream, "%s %02d:%02d:%06.3fZ ",
+            datebuf,
             (int) ((now / (3600 * seconds)) % 24),
             (int) ((now / (60 * seconds)) % 60),
-            (now % (60 * seconds)) / (1000.0 * 1000.0));
+            (now % (60 * seconds)) * (1e-6f));
+
 }
 
 /* record current monotonic time in start_time */
