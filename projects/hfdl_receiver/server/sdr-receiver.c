@@ -331,6 +331,8 @@ int main(int argc, char *argv[])
     int noReadCounter = 10;
     while(!interrupted)
     {
+      int doneSomething = 0;
+
       #ifdef TEST
       // simulate 25 MByte/s
       *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
@@ -355,6 +357,8 @@ int main(int argc, char *argv[])
 
       while(rx_samples >= CHUNK_SAMPLES)
       {
+        //fprintf(stderr, "rx_samples %6d > chunk samples %6d\n", rx_samples, CHUNK_SAMPLES);
+        doneSomething = 1;
         int wasDropping = dropping;
         int dropUntil = SENDQ_MAX / 2;
         if (sendqLen(cl) < dropUntil) {
@@ -387,28 +391,25 @@ int main(int argc, char *argv[])
 
       readTime = lapWatch(&watch);
 
-      // to ensure flushClient doesn't take super long,
-      // limit each send syscall to 16x the chunk size
-      // this means we can send on the network 8x faster than we get data
-      // enough to catch up quickly
-      int bytesWritten = flushClient(cl, 8 * CHUNK_BYTES);
-      if (bytesWritten < 0) {
-        break;
+      if (!doneSomething) {
+        // to ensure flushClient doesn't take super long,
+        // limit each send syscall to the chunk size
+        int bytesWritten = flushClient(cl, CHUNK_BYTES);
+        if (bytesWritten < 0) {
+          break;
+        }
+
+        if (bytesWritten > CHUNK_BYTES / 2) {
+          doneSomething = 1;
+        }
       }
 
       flushTime = lapWatch(&watch);
 
-      int noSleep = 0;
-
-      if (bytesWritten > 0) {
-        // omit sleep if progress is being made emptying our buffer to the OS network buffer
-        noSleep = 1;
-      }
-
       // only check socket read every 10 iterations, rougly 5 ms
       // never hurts to use a couple less syscalls
-      if (++noReadCounter >= 10) {
-        noSleep = 1; // omit sleep when reading from network
+      if (!doneSomething && ++noReadCounter >= 20) {
+        doneSomething = 1;
         noReadCounter = 0;
         size = 0;
         if(ioctl(sock_client, FIONREAD, &size) < 0) {
@@ -442,13 +443,19 @@ int main(int argc, char *argv[])
 
       recvTime = lapWatch(&watch);
 
-      if (!noSleep) {
+      if (!doneSomething) {
         usleep(500);
       }
 
       sleepTime = lapWatch(&watch);
 
       last_iteration_us = recvTime + readTime + flushTime + sleepTime;
+
+      if (0) {
+        fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
+            readTime, flushTime, recvTime, sleepTime);
+        lapWatch(&watch); // reset this so the printf time isn't awarded towards readtime
+      }
     }
 
     // make sure the client is closed, if this errors it's fine
