@@ -21,12 +21,17 @@ def read_and_separate_data(device_ip, device_port):
 
     write_index = 0  # Track the index of the buffer being written to
 
+    print(f"RX thread connecting to {device_ip}:{device_port}")
+
     # Open a socket to the device
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(5)
         s.connect((device_ip, device_port))
         s.settimeout(None)
         print(f"RX thread connected to {device_ip}:{device_port}")
+
+        # make sure we send the frequencies at the start of a new connection
+        new_freq = True
 
         while True:
             if new_freq:
