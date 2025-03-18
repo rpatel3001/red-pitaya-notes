@@ -7,28 +7,39 @@ import sys
 import _thread
 import argparse
 from signal import signal, SIGINT
+from time import sleep
 
 RX_DTYPE = np.int16  # Data type of received data
 #RX_DTYPE = np.uint8  # Data type of received data
 
 def read_and_separate_data(device_ip, device_port, device_freq, device_corr):
     # Open a socket to the device
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(5)
-        s.connect((device_ip, device_port))
-        print(f"RX thread connected to {device_ip}:{device_port}")
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.connect((device_ip, device_port))
+                print(f"RX thread connected to {device_ip}:{device_port}")
 
-        # Send the specific byte string to the receiver immediately after connecting
-        connection_message = pack("<1I", int((1.0 + 1e-6 * device_corr) * device_freq))
-        s.settimeout(None)
-        s.sendall(connection_message)
+                # Send the specific byte string to the receiver immediately after connecting
+                connection_message = pack("<1I", int((1.0 + 1e-6 * device_corr) * device_freq))
+                s.sendall(connection_message)
 
-        while True:
-            # Read a chunk of interleaved data (buffer is always full due to MSG_WAITALL)
-            data = s.recv(BUFFER_SIZE * 2 * np.dtype(RX_DTYPE).itemsize, socket.MSG_WAITALL)
-            if not data:
-                break  # Exit the loop if no data is received
-            sys.stdout.buffer.write(bytes(data))
+                while True:
+                    # Read a chunk of interleaved data (buffer is always full due to MSG_WAITALL)
+                    data = s.recv(BUFFER_SIZE * 2 * np.dtype(RX_DTYPE).itemsize, socket.MSG_WAITALL)
+                    if len(data) < BUFFER_SIZE * 2 * np.dtype(RX_DTYPE).itemsize:
+                        s.close()
+                        break  # Exit the loop if less than a full chunk is received
+                    sys.stdout.buffer.write(bytes(data))
+            except ConnectionRefusedError as e:
+                sleep(1)
+                pass
+            except ConnectionResetError as e:
+                sleep(1)
+                pass
+            except Exception as e:
+                print(e)
+                break
 
 # Argument parser function
 def parse_arguments():

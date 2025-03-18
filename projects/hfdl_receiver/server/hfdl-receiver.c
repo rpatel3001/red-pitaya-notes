@@ -447,7 +447,7 @@ int main(int argc, char *argv[])
           /* set rx phase increments */
           for(i = 0; i < NUMCHANS; ++i)
           {
-            printf("freq %d, phase %d\n", ctrl.freq[i], (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5));
+            fprintf(stderr, "freq %d, phase %d\n", ctrl.freq[i], (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5));
             rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5);
           }
         }

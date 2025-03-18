@@ -10,6 +10,7 @@ import _thread
 from struct import pack, unpack
 from signal import signal, SIGINT
 from select import select
+from time import sleep
 
 # Constants
 RX_DTYPE = np.int16  # Data type of received data
@@ -34,36 +35,46 @@ def read_and_separate_data(device_ip, device_port):
     log(f"RX thread connecting to {device_ip}:{device_port}")
 
     # Open a socket to the device
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(5)
-        s.connect((device_ip, device_port))
-        s.settimeout(None)
-        log(f"RX thread connected to {device_ip}:{device_port}")
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.connect((device_ip, device_port))
+                log(f"RX thread connected to {device_ip}:{device_port}")
 
-        # make sure we send the frequencies at the start of a new connection
-        new_freq = True
+                # make sure we send the frequencies at the start of a new connection
+                new_freq = True
 
-        while True:
-            if new_freq:
-                new_freq = False
-                # Send the specific byte string to the receiver immediately after connecting
-                connection_message = pack(f"<{len(freqs)+2}I", 0, 0, *[int(f) for f in freqs])
-                s.sendall(connection_message)
-            # Read a chunk of interleaved data (buffer is always full due to MSG_WAITALL)
-            data = s.recv(BUFFER_SIZE * NUM_CHANNELS * 2 * np.dtype(RX_DTYPE).itemsize, socket.MSG_WAITALL)
-            if not data:
-                break  # Exit the loop if no data is received
+                while True:
+                    if new_freq:
+                        new_freq = False
+                        # Send the specific byte string to the receiver immediately after connecting
+                        connection_message = pack(f"<{len(freqs)+2}I", 0, 0, *[int(f) for f in freqs])
+                        s.sendall(connection_message)
+                    # Read a chunk of interleaved data (buffer is always full due to MSG_WAITALL)
+                    data = s.recv(BUFFER_SIZE * NUM_CHANNELS * 2 * np.dtype(RX_DTYPE).itemsize, socket.MSG_WAITALL)
+                    if len(data) < BUFFER_SIZE * NUM_CHANNELS * 2 * np.dtype(RX_DTYPE).itemsize:
+                        s.close()
+                        break  # Exit the loop if less than a full chunk is received
 
-            # Convert the data to a numpy array of integers (assuming 16-bit data for this example)
-            data_array = np.frombuffer(data, dtype=RX_DTYPE)
-            real_buffers[write_index][:] = data_array[0::2]
-            imag_buffers[write_index][:] = data_array[1::2]
+                    # Convert the data to a numpy array of integers (assuming 16-bit data for this example)
+                    data_array = np.frombuffer(data, dtype=RX_DTYPE)
+                    real_buffers[write_index][:] = data_array[0::2]
+                    imag_buffers[write_index][:] = data_array[1::2]
 
-            # Split the interleaved data into separate channels and fill the corresponding real and imaginary buffers
-            for i in range(NUM_CHANNELS):
-                # Once the buffer is full, push it to the queue and move to the next buffer
-                buffer_queues[i].put(write_index)
-            write_index = (write_index + 1) % NUM_BUFFERS
+                    # Split the interleaved data into separate channels and fill the corresponding real and imaginary buffers
+                    for i in range(NUM_CHANNELS):
+                        # Once the buffer is full, push it to the queue and move to the next buffer
+                        buffer_queues[i].put(write_index)
+                    write_index = (write_index + 1) % NUM_BUFFERS
+            except ConnectionRefusedError as e:
+                sleep(1)
+                pass
+            except ConnectionResetError as e:
+                sleep(1)
+                pass
+            except Exception as e:
+                print(e)
+                break
 
 # Transmit thread function to send data over a socket for each channel
 def transmit_channel_data(channel_idx, transmit_port):
@@ -106,7 +117,7 @@ def transmit_channel_data(channel_idx, transmit_port):
 
                         # Wait for a full buffer index to be pushed to the queue (with timeout)
                         try:
-                            buffer_idx = buffer_queues[channel_idx].get(timeout=1)
+                            buffer_idx = buffer_queues[channel_idx].get(timeout=10)
 
                             # Send the buffer's data over the socket
                             interleaved[0::2] = real_buffers[buffer_idx][channel_idx::NUM_CHANNELS]
