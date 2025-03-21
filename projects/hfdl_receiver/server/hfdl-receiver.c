@@ -305,8 +305,10 @@ static int flushClient(struct client *c, int limit)
   }
   if (bytesWritten < 0) {
     // send error
-    emitTime(stderr);
-    perror("send ");
+    if (0) {
+      emitTime(stderr);
+      perror("send ");
+    }
     return -1;
   }
   if (bytesWritten > 0) {
