@@ -162,7 +162,7 @@ static void setNonblocking(int fd) {
 
 static void listenClient(struct client *c, int port) {
   emitTime(stderr);
-  fprintf(stderr, "listen on port %d\n", port);
+  fprintf(stderr, "%d: open listen port\n", port);
 
   c->listenPort = port;
   c->listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -205,7 +205,7 @@ static void acceptClient(struct client *c) {
   setNonblocking(c->fd);
 
   emitTime(stderr);
-  fprintf(stderr, "connected on port %d\n", c->listenPort);
+  fprintf(stderr, "%d: connected\n", c->listenPort);
 
   // reset ringbuffer
   c->sendqStart = c->sendq;
@@ -234,7 +234,7 @@ static int closeClient(struct client *c) {
   c->fd = -1; // mark this client as disconnected
 
   emitTime(stderr);
-  fprintf(stderr, "disconnected on port %d\n", c->listenPort);
+  fprintf(stderr, "%d: disconnected\n", c->listenPort);
 }
 
 
@@ -268,7 +268,7 @@ static void normalizeSendq(struct client *c)
     }
 
     emitTime(stderr);
-    fprintf(stderr, "port %d: dropping %5.1f MBytes, total dropped MBytes on this port: %8lld\n", c->listenPort, dropBytes / (1024.0f * 1024.0f), c->bytesDropped / (1024 * 1024));
+    fprintf(stderr, "%d: dropping %5.1f MBytes, total dropped MBytes on this port: %8lld\n", c->listenPort, dropBytes / (1024.0f * 1024.0f), c->bytesDropped / (1024 * 1024));
   }
 }
 
