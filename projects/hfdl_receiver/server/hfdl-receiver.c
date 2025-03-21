@@ -386,182 +386,179 @@ int main(int argc, char *argv[])
   signal(SIGHUP, signal_handler);
   signal(SIGQUIT, signal_handler);
 
+  *rx_rst &= ~1;
+  *rx_sel = 0;
+  *rx_rate = 1280;
+  for(i = 0; i < NUMCHANS; ++i)
+  {
+    rx_freq[i] = (uint32_t)floor(600000 / 122.88e6 * (1 << PHASE_BITS) + 0.5);
+  }
+
+  *rx_rst |= 1;
+
+  startWatch(&watch);
+  us = microtime();
+  int64_t last_iteration_us = 0;
+  int64_t recvTime = 0;
+  int64_t readTime = 0;
+  int64_t flushTime = 0;
+  int64_t sleepTime = 0;
+  int64_t nextNetworkMaintenance = 0;
+  int64_t now = 0;
   while(!interrupted)
   {
-    *rx_rst &= ~1;
-    *rx_sel = 0;
-    *rx_rate = 1280;
-    for(i = 0; i < NUMCHANS; ++i)
+    int doneSomething = 0;
+
+    #ifdef TEST
+    // simulate 25 MByte/s
+    *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
+    #endif
+
+    rx_samples = *rx_cntr;
+
+    if(rx_samples >= FIFO_SAMPLES)
     {
-      rx_freq[i] = (uint32_t)floor(600000 / 122.88e6 * (1 << PHASE_BITS) + 0.5);
+      emitTime(stderr);
+      fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
+          last_iteration_us, rx_samples, FIFO_SAMPLES);
+      fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
+          readTime, flushTime, recvTime, sleepTime);
+      *rx_rst &= ~1;
+      *rx_rst |= 1;
+      rx_samples = 0;
+      #ifdef TEST
+      *rx_cntr = 0;
+      #endif
     }
 
-    *rx_rst |= 1;
-
-    startWatch(&watch);
-    us = microtime();
-    int64_t last_iteration_us = 0;
-    int64_t recvTime = 0;
-    int64_t readTime = 0;
-    int64_t flushTime = 0;
-    int64_t sleepTime = 0;
-    int64_t nextNetworkMaintenance = 0;
-    int64_t now = 0;
-    while(!interrupted)
+    while(rx_samples >= CHUNK_SAMPLES)
     {
-      int doneSomething = 0;
+      //fprintf(stderr, "rx_samples %6d > chunk samples %6d\n", rx_samples, CHUNK_SAMPLES);
+      doneSomething = 1;
 
+      memcpy(buffer, (void *) fifo, CHUNK_BYTES);
+
+      uint32_t *src = (uint32_t *) buffer;
+      for(int channel = 0; channel < NUMCHANS; channel++) {
+        struct client *cl = clients[channel];
+        if (cl->fd == -1) {
+          continue;
+        }
+
+        if (SAMPLE_SIZE != 4) {
+          fprintf(stderr, "incompatible sample size\n");
+          exit(EXIT_FAILURE);
+        }
+
+        uint32_t *target = (uint32_t *) cl->sendqEnd;
+        int t = 0;
+        for (int k = channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
+          target[t++] = src[k];
+        }
+        int bytesCopied = t * SAMPLE_SIZE;
+        cl->sendqEnd += bytesCopied;
+
+        if (bytesCopied != CHUNK_CHANNEL_BYTES) {
+          fprintf(stderr, "wrote wrong amount of bytes to sendq: %d should be: %d\n", bytesCopied, CHUNK_CHANNEL_BYTES);
+          exit(EXIT_FAILURE);
+        }
+
+        normalizeSendq(cl);
+      }
+
+      rx_samples -= CHUNK_SAMPLES;
       #ifdef TEST
-      // simulate 25 MByte/s
-      *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
+      *rx_cntr -= CHUNK_SAMPLES;
       #endif
+    }
 
-      rx_samples = *rx_cntr;
+    readTime = lapWatch(&watch);
 
-      if(rx_samples >= FIFO_SAMPLES)
-      {
-        emitTime(stderr);
-        fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
-                last_iteration_us, rx_samples, FIFO_SAMPLES);
-        fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
-                readTime, flushTime, recvTime, sleepTime);
-        *rx_rst &= ~1;
-        *rx_rst |= 1;
-        rx_samples = 0;
-        #ifdef TEST
-        *rx_cntr = 0;
-        #endif
-      }
+    if (!doneSomething) {
+      for(int channel = 0; channel < NUMCHANS; channel++) {
+        struct client *cl = clients[channel];
+        if (cl->fd == -1) {
+          continue;
+        }
+        //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
+        // to ensure flushClient doesn't take super long,
+        // limit each send syscall to the chunk size
+        int bytesWritten = flushClient(cl, CHUNK_BYTES);
 
-      while(rx_samples >= CHUNK_SAMPLES)
-      {
-        //fprintf(stderr, "rx_samples %6d > chunk samples %6d\n", rx_samples, CHUNK_SAMPLES);
-        doneSomething = 1;
-
-        memcpy(buffer, (void *) fifo, CHUNK_BYTES);
-
-        uint32_t *src = (uint32_t *) buffer;
-        for(int channel = 0; channel < NUMCHANS; channel++) {
-          struct client *cl = clients[channel];
-          if (cl->fd == -1) {
-            continue;
-          }
-
-          if (SAMPLE_SIZE != 4) {
-            fprintf(stderr, "incompatible sample size\n");
-            exit(EXIT_FAILURE);
-          }
-
-          uint32_t *target = (uint32_t *) cl->sendqEnd;
-          int t = 0;
-          for (int k = channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
-            target[t++] = src[k];
-          }
-          int bytesCopied = t * SAMPLE_SIZE;
-          cl->sendqEnd += bytesCopied;
-
-          if (bytesCopied != CHUNK_CHANNEL_BYTES) {
-            fprintf(stderr, "wrote wrong amount of bytes to sendq: %d should be: %d\n", bytesCopied, CHUNK_CHANNEL_BYTES);
-            exit(EXIT_FAILURE);
-          }
-
-          normalizeSendq(cl);
+        if (bytesWritten < 0) {
+          closeClient(cl);
+          continue;
         }
 
-        rx_samples -= CHUNK_SAMPLES;
-        #ifdef TEST
-        *rx_cntr -= CHUNK_SAMPLES;
-        #endif
+        if (bytesWritten > 0) {
+          doneSomething = 1;
+        }
       }
+    }
 
-      readTime = lapWatch(&watch);
+    flushTime = lapWatch(&watch);
 
-      if (!doneSomething) {
-        for(int channel = 0; channel < NUMCHANS; channel++) {
-          struct client *cl = clients[channel];
-          if (cl->fd == -1) {
-            continue;
-          }
-          //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
-          // to ensure flushClient doesn't take super long,
-          // limit each send syscall to the chunk size
-          int bytesWritten = flushClient(cl, CHUNK_BYTES);
-
-          if (bytesWritten < 0) {
+    now = microtime();
+    if (!doneSomething && now > nextNetworkMaintenance) {
+      //fprintf(stderr, "net maintenance\n");
+      // do this every 100 ms
+      nextNetworkMaintenance = now + 100 * 1000;
+      doneSomething = 1;
+      for(int channel = 0; channel < NUMCHANS; channel++) {
+        struct client *cl = clients[channel];
+        //fprintf(stderr, "cl->fd %d\n", cl->fd);
+        if (cl->fd == -1) {
+          acceptClient(cl);
+        }
+        if (cl->fd == -1) {
+          continue;
+        }
+        size = 0;
+        if(ioctl(cl->fd, FIONREAD, &size) < 0) {
+          perror("fionread");
+          closeClient(cl);
+          continue;
+        }
+        if(size >= sizeof(struct control))
+        {
+          if(recv(cl->fd, (char *)&ctrl, sizeof(struct control), MSG_WAITALL) < 0) {
+            perror("recv");
             closeClient(cl);
             continue;
           }
 
-          if (bytesWritten > 0) {
-            doneSomething = 1;
-          }
-        }
-      }
+          /* set inputs */
+          *rx_sel = ctrl.inps & 0xff;
 
-      flushTime = lapWatch(&watch);
+          /* set rx sample rate */
+          *rx_rate = rates[ctrl.rate & 3];
 
-      now = microtime();
-      if (!doneSomething && now > nextNetworkMaintenance) {
-        //fprintf(stderr, "net maintenance\n");
-        // do this every 100 ms
-        nextNetworkMaintenance = now + 100 * 1000;
-        doneSomething = 1;
-        for(int channel = 0; channel < NUMCHANS; channel++) {
-          struct client *cl = clients[channel];
-          //fprintf(stderr, "cl->fd %d\n", cl->fd);
-          if (cl->fd == -1) {
-            acceptClient(cl);
-          }
-          if (cl->fd == -1) {
-            continue;
-          }
-          size = 0;
-          if(ioctl(cl->fd, FIONREAD, &size) < 0) {
-            perror("fionread");
-            closeClient(cl);
-            continue;
-          }
-          if(size >= sizeof(struct control))
+          emitTime(stderr);
+          fprintf(stderr, "got new frequencies\n");
+          /* set rx phase increments */
+          for(i = 0; i < NUMCHANS; ++i)
           {
-            if(recv(cl->fd, (char *)&ctrl, sizeof(struct control), MSG_WAITALL) < 0) {
-              perror("recv");
-              closeClient(cl);
-              continue;
-            }
-
-            /* set inputs */
-            *rx_sel = ctrl.inps & 0xff;
-
-            /* set rx sample rate */
-            *rx_rate = rates[ctrl.rate & 3];
-
-            emitTime(stderr);
-            fprintf(stderr, "got new frequencies\n");
-            /* set rx phase increments */
-            for(i = 0; i < NUMCHANS; ++i)
-            {
-              fprintf(stderr, "freq %d, phase %d\n", ctrl.freq[i], (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5));
-              rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5);
-            }
+            fprintf(stderr, "freq %d, phase %d\n", ctrl.freq[i], (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5));
+            rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5);
           }
         }
       }
+    }
 
-      recvTime = lapWatch(&watch);
+    recvTime = lapWatch(&watch);
 
-      if (!doneSomething) {
-        usleep(500);
-      }
+    if (!doneSomething) {
+      usleep(500);
+    }
 
-      sleepTime = lapWatch(&watch);
+    sleepTime = lapWatch(&watch);
 
-      last_iteration_us = recvTime + readTime + flushTime + sleepTime;
+    last_iteration_us = recvTime + readTime + flushTime + sleepTime;
 
-      if (0) {
-        fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
-            readTime, flushTime, recvTime, sleepTime);
-        lapWatch(&watch); // reset this so the printf time isn't awarded towards readtime
-      }
+    if (0) {
+      fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
+          readTime, flushTime, recvTime, sleepTime);
+      lapWatch(&watch); // reset this so the printf time isn't awarded towards readtime
     }
   }
 
