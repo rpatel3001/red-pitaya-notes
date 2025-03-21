@@ -139,6 +139,8 @@ static void allocateClient(struct client *c) {
 
   // multiple of CHUNK_CHANNEL_BYTES
   c->sendqMax = TOTAL_NET_BUFFER / NUMCHANS / CHUNK_CHANNEL_BYTES * CHUNK_CHANNEL_BYTES;
+
+  //fprintf(stderr, "sendqmax: %d\n", c->sendqMax);
   c->sendq = malloc(c->sendqMax);
   if (c->sendq == NULL) {
     perror("malloc allocateClient");
@@ -225,6 +227,9 @@ static void disconnectFd(int fd) {
 }
 
 static int closeClient(struct client *c) {
+  if (c->fd == -1) {
+    fprintf(stderr, "%d: called closeClient on closed client\n", c->listenPort);
+  }
   disconnectFd(c->fd);
 
   c->fd = -1; // mark this client as disconnected
@@ -264,7 +269,7 @@ static void normalizeSendq(struct client *c)
     }
 
     emitTime(stderr);
-    fprintf(stderr, "port %d: dropping %d MBytes, total dropped MBytes on this port: %8lld\n", dropBytes / 1024 / 1024, c->bytesDropped / 1024 / 1024);
+    fprintf(stderr, "port %d: dropping %5.1f MBytes, total dropped MBytes on this port: %8lld\n", c->listenPort, dropBytes / (1024.0f * 1024.0f), c->bytesDropped / (1024 * 1024));
   }
 }
 
@@ -273,16 +278,19 @@ static int flushClient(struct client *c, int limit)
   static int64_t byteCounter;
   int debug = 0;
   int toWrite = sendqLen(c);
-  if (c->sendqStart + toWrite > c->sendq + c->sendqMax) {
-    // if the sendq wraps around, only send() the start located at the end of the buffer
-    toWrite = c->sendq + c->sendqMax - c->sendqStart;
-  }
 
   // only flush if we have a good amount of data
   if (toWrite < 8 * 1400) {
     //c->last_flush = now;
     return 0;
   }
+
+  if (c->sendqStart + toWrite > c->sendq + c->sendqMax) {
+    // if the sendq wraps around, only send() the start located at the end of the buffer
+    toWrite = c->sendq + c->sendqMax - c->sendqStart;
+  }
+
+  //fprintf(stderr, "toWrite %d\n", toWrite);
 
   if (toWrite > limit) {
       toWrite = limit;
@@ -464,6 +472,7 @@ int main(int argc, char *argv[])
         }
 
         normalizeSendq(cl);
+        //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
       }
 
       rx_samples -= CHUNK_SAMPLES;
