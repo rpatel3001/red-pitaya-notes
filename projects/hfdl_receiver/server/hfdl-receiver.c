@@ -163,6 +163,17 @@ static void setNonblocking(int fd) {
   }
 }
 
+static void disconnectFd(int fd) {
+  // get errors to avoid close / shutdown errors
+  int err = 1;
+  socklen_t len = sizeof err;
+  getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *) &err, &len);
+  // shut down socket
+  shutdown(fd, SHUT_RDWR);
+  // make sure the client is closed, if this errors it's fine
+  close(fd);
+}
+
 static void listenClient(struct client *c, int port) {
   emitTime(stderr);
   fprintf(stderr, "%d: open listen port\n", port);
@@ -197,6 +208,15 @@ static void listenClient(struct client *c, int port) {
   setNonblocking(c->listenFd);
 }
 
+static void acceptClientDiscard(struct client *c) {
+  int fd = accept(c->listenFd, NULL, NULL);
+  if (fd >= 0) {
+    emitTime(stderr);
+    fprintf(stderr, "%d: only one connection per channel supported\n", c->listenPort);
+    disconnectFd(fd);
+  }
+}
+
 static void acceptClient(struct client *c) {
   //emitTime(stderr);
   //fprintf(stderr, "accept on port %d\n", c->listenPort);
@@ -215,17 +235,6 @@ static void acceptClient(struct client *c) {
   c->sendqEnd = c->sendq;
 
   c->bytesDropped = 0;
-}
-
-static void disconnectFd(int fd) {
-  // get errors to avoid close / shutdown errors
-  int err = 1;
-  socklen_t len = sizeof err;
-  getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *) &err, &len);
-  // shut down socket
-  shutdown(fd, SHUT_RDWR);
-  // make sure the client is closed, if this errors it's fine
-  close(fd);
 }
 
 static int closeClient(struct client *c) {
@@ -547,6 +556,9 @@ int main(int argc, char *argv[])
         if (cl->fd == -1) {
           continue;
         }
+        // disconnect new clients on the listen port, we already have a client
+        // only one connection / client per channel is supported
+        acceptClientDiscard(cl);
         size = 0;
         if(ioctl(cl->fd, FIONREAD, &size) < 0) {
           perror("fionread");
