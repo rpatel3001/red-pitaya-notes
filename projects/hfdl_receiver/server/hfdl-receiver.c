@@ -49,7 +49,11 @@ void signal_handler(int sig)
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 #define CHUNK_CHANNEL_BYTES (CHUNK_BYTES / NUMCHANS)
 
-#define TOTAL_NET_BUFFER (256 * 1024 * 1024)
+#ifndef TEST
+  #define TOTAL_NET_BUFFER (256 * 1024 * 1024)
+#else
+  #define TOTAL_NET_BUFFER (16 * 1024 * 1024)
+#endif
 
 struct client
 {
@@ -165,6 +169,9 @@ static void setNonblocking(int fd) {
 }
 
 static void listenClient(struct client *c, int port) {
+  emitTime(stderr);
+  fprintf(stderr, "listen on port %d\n", port);
+
   c->listenPort = port;
   c->listenFd = socket(AF_INET, SOCK_STREAM, 0);
   if(c->listenFd < 0)
