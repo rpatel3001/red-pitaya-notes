@@ -506,7 +506,7 @@ int main(int argc, char *argv[])
           continue;
         }
 
-        if (bytesWritten > 0) {
+        if (bytesWritten >= CHUNK_CHANNEL_BYTES) {
           doneSomething = 1;
         }
       }
