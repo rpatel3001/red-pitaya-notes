@@ -30,14 +30,6 @@
 #define SAMPLE_SIZE 4 // in bytes
 #define FIFO_SAMPLES (FIFO_BYTES / SAMPLE_SIZE)
 
-struct control
-{
-  int32_t inps, rate;
-  int32_t freq[NUMCHANS];
-};
-
-const int rates[4] = {1280, 640, 320, 160};
-
 int interrupted = 0;
 
 void signal_handler(int sig)
@@ -334,7 +326,6 @@ int main(int argc, char *argv[])
   volatile uint8_t *rx_rst, *rx_sel;
   volatile uint16_t *rx_rate, *rx_cntr;
   volatile uint32_t *rx_freq;
-  struct control ctrl;
   uint32_t size, n;
   void *buffer;
   int64_t us, usp;
@@ -535,28 +526,19 @@ int main(int argc, char *argv[])
           closeClient(cl);
           continue;
         }
-        if(size >= sizeof(struct control))
+        uint32_t freq;
+        if(size >= sizeof(freq))
         {
-          if(recv(cl->fd, (char *)&ctrl, sizeof(struct control), MSG_WAITALL) < 0) {
+          if(recv(cl->fd, (char *)&freq, sizeof(freq), MSG_WAITALL) < 0) {
             perror("recv");
             closeClient(cl);
             continue;
           }
 
-          /* set inputs */
-          *rx_sel = ctrl.inps & 0xff;
-
-          /* set rx sample rate */
-          *rx_rate = rates[ctrl.rate & 3];
-
           emitTime(stderr);
-          fprintf(stderr, "got new frequencies\n");
-          /* set rx phase increments */
-          for(i = 0; i < NUMCHANS; ++i)
-          {
-            fprintf(stderr, "freq %d, phase %d\n", ctrl.freq[i], (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5));
-            rx_freq[i] = (uint32_t)floor(ctrl.freq[i] / 122.88e6 * (1 << PHASE_BITS) + 0.5);
-          }
+          /* set rx phase increment */
+          fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5));
+          rx_freq[channel] = (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5);
         }
       }
     }
