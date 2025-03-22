@@ -6,17 +6,52 @@ import sys
 import _thread
 import argparse
 from signal import signal, SIGINT
-from time import sleep
+import time
+import math
+import traceback
 
 SAMPLE_SIZE=4  # Sample size of received data (CS16)
 
+def log(msg):
+    milliseconds = math.floor(math.modf(time.time())[0] * 1000)
+    timestamp = (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            + ".{0:03.0f}Z ".format(milliseconds)
+            )
+
+    if isinstance(msg, list):
+        msg = ''.join(msg)
+
+    if not isinstance(msg, str):
+        msg = str(msg)
+
+    if not msg.endswith('\n'):
+        msg += '\n'
+
+    sys.stderr.write(timestamp + msg)
+
 def read_and_separate_data(device_ip, device_port, device_freq, device_corr):
     # Open a socket to the device
+    lastConnect = 0
     while True:
+        elapsed = time.time() - lastConnect
+        if elapsed < 5:
+            time.sleep(5 - elapsed)
+        lastConnect = time.time()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
+                s.settimeout(5)
                 s.connect((device_ip, device_port))
-                print(f"RX thread connected to {device_ip}:{device_port}")
+            except OSError as e:
+                log(traceback.format_exception_only(e))
+                continue
+            except Exception as e:
+                log(traceback.format_exception(e))
+                break
+
+            try:
+                s.settimeout(None) # necessary for msg_waitall
+                log(f"RX thread connected to {device_ip}:{device_port}")
 
                 # Send the specific byte string to the receiver immediately after connecting
                 connection_message = pack("<1I", int((1.0 + 1e-6 * device_corr) * device_freq))
@@ -29,15 +64,12 @@ def read_and_separate_data(device_ip, device_port, device_freq, device_corr):
                         s.close()
                         break  # Exit the loop if less than a full chunk is received
                     sys.stdout.buffer.write(bytes(data))
-            except ConnectionRefusedError as e:
-                sleep(1)
-                pass
-            except ConnectionResetError as e:
-                sleep(1)
+            except OSError as e:
                 pass
             except Exception as e:
-                print(e)
+                log(traceback.format_exception(e))
                 break
+        log(f"RX thread disconnected from {device_ip}:{device_port}")
 
 # Argument parser function
 def parse_arguments():
@@ -51,12 +83,12 @@ def parse_arguments():
 
 if __name__ == '__main__':
     def signal_handler(signal, frame):
-        _thread.interrupt_main()
+        sys.exit()
     signal(SIGINT, signal_handler)
 
     # Parse arguments
     args = parse_arguments()
-    print(args)
+    log(args)
 
     # Set global variables from arguments
     DEVICE_IP = args.server
