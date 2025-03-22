@@ -20,6 +20,12 @@
 #define PHASE_BITS 29
 #define NUMCHANS 13
 #define TCP_PORT 9000
+#define TCP_PORT_CU8 8000
+
+#define NUMCLIENTS (2 * NUMCHANS)
+
+#define CS16 (0)
+#define CU8 (1)
 
 // pretty sure fifo bytes should not be changed
 // also needs to be a multiple of system pagesize but that's usually 4K
@@ -41,6 +47,7 @@ void signal_handler(int sig)
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 #define CHUNK_CHANNEL_BYTES (CHUNK_BYTES / NUMCHANS)
 
+// actually 25% more for CU8 buffers but we should have 512M to work with
 #ifndef TEST
   #define TOTAL_NET_BUFFER (256 * 1024 * 1024)
 #else
@@ -58,6 +65,8 @@ struct client
   int64_t last_send;
   int listenPort;
   int listenFd;
+  int format;
+  int channel;
   uint64_t bytesDropped;
 };
 
@@ -129,12 +138,12 @@ static int sendqLen(struct client *c)
     return ((c->sendqEnd - c->sendq) + (c->sendq + c->sendqMax - c->sendqStart));
   }
 }
-static void allocateClient(struct client *c) {
+static void allocateClient(struct client *c, int sendqMax) {
   // clear client struct
   memset(c, 0, sizeof(struct client));
 
   // multiple of CHUNK_CHANNEL_BYTES
-  c->sendqMax = TOTAL_NET_BUFFER / NUMCHANS / CHUNK_CHANNEL_BYTES * CHUNK_CHANNEL_BYTES;
+  c->sendqMax = sendqMax / CHUNK_CHANNEL_BYTES * CHUNK_CHANNEL_BYTES;
 
   //fprintf(stderr, "sendqmax: %d\n", c->sendqMax);
   c->sendq = malloc(c->sendqMax);
@@ -176,7 +185,7 @@ static void disconnectFd(int fd) {
 
 static void listenClient(struct client *c, int port) {
   emitTime(stderr);
-  fprintf(stderr, "%d: open listen port\n", port);
+  fprintf(stderr, "%d: open listen port %s\n", port, c->format == CS16 ? "CS16" : "CU8");
 
   c->listenPort = port;
   c->listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -391,13 +400,24 @@ int main(int argc, char *argv[])
 
   rx_cntr = (uint16_t *)(sts + 0);
 
-  struct client client_back[NUMCHANS];
-  struct client *clients[NUMCHANS];
+  struct client client_back[NUMCLIENTS];
+  struct client *clients[NUMCLIENTS];
   for(i = 0; i < NUMCHANS; ++i) {
     clients[i] = &client_back[i];
     struct client *cl = clients[i];
-    allocateClient(cl);
+    allocateClient(cl, TOTAL_NET_BUFFER / NUMCHANS);
+    cl->format = CS16;
+    cl->channel = i;
     listenClient(cl, TCP_PORT + i);
+    // for simplicity: one connection per listen port
+  }
+  for(i = NUMCHANS; i < 2 * NUMCHANS; ++i) {
+    clients[i] = &client_back[i];
+    struct client *cl = clients[i];
+    allocateClient(cl, TOTAL_NET_BUFFER / 4 / NUMCHANS); // less buffer for CU8 outputs
+    cl->format = CU8;
+    cl->channel = i - NUMCHANS;
+    listenClient(cl, TCP_PORT_CU8 + (i - NUMCHANS));
     // for simplicity: one connection per listen port
   }
 
@@ -460,29 +480,44 @@ int main(int argc, char *argv[])
 
       memcpy(buffer, (void *) fifo, CHUNK_BYTES);
 
-      uint32_t *src = (uint32_t *) buffer;
-      for(int channel = 0; channel < NUMCHANS; channel++) {
-        struct client *cl = clients[channel];
+      for(int id = 0; id < NUMCLIENTS; id++) {
+        struct client *cl = clients[id];
         if (cl->fd == -1) {
           continue;
         }
 
-        if (SAMPLE_SIZE != 4) {
-          fprintf(stderr, "incompatible sample size\n");
-          exit(EXIT_FAILURE);
-        }
+        if (cl->format == CU8) {
+          int16_t *src = (int16_t *) buffer;
+          uint8_t *target = (uint8_t *) cl->sendqEnd;
+          int t = 0;
+          for (int k = cl->channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
+            target[t++] = (uint8_t) ((src[2 * k + 0] >> 8) + 127);
+            target[t++] = (uint8_t) ((src[2 * k + 1] >> 8) + 127);
+          }
+          cl->sendqEnd += t;
+          if (t != CHUNK_CHANNEL_BYTES / 2) {
+            fprintf(stderr, "CU8 to sendq: %d should be: %d\n", t, CHUNK_CHANNEL_BYTES / 2);
+            exit(EXIT_FAILURE);
+          }
+        } else if (cl->format == CS16) {
+          if (SAMPLE_SIZE != 4) {
+            fprintf(stderr, "incompatible sample size\n");
+            exit(EXIT_FAILURE);
+          }
 
-        uint32_t *target = (uint32_t *) cl->sendqEnd;
-        int t = 0;
-        for (int k = channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
-          target[t++] = src[k];
-        }
-        int bytesCopied = t * SAMPLE_SIZE;
-        cl->sendqEnd += bytesCopied;
+          uint32_t *src = (uint32_t *) buffer;
+          uint32_t *target = (uint32_t *) cl->sendqEnd;
+          int t = 0;
+          for (int k = cl->channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
+            target[t++] = src[k];
+          }
+          int bytesCopied = t * SAMPLE_SIZE;
+          cl->sendqEnd += bytesCopied;
 
-        if (bytesCopied != CHUNK_CHANNEL_BYTES) {
-          fprintf(stderr, "wrote wrong amount of bytes to sendq: %d should be: %d\n", bytesCopied, CHUNK_CHANNEL_BYTES);
-          exit(EXIT_FAILURE);
+          if (bytesCopied != CHUNK_CHANNEL_BYTES) {
+            fprintf(stderr, "wrote wrong amount of bytes to sendq: %d should be: %d\n", bytesCopied, CHUNK_CHANNEL_BYTES);
+            exit(EXIT_FAILURE);
+          }
         }
 
         normalizeSendq(cl);
@@ -498,8 +533,8 @@ int main(int argc, char *argv[])
     readTime = lapWatch(&watch);
 
     if (!doneSomething) {
-      for(int channel = 0; channel < NUMCHANS; channel++) {
-        struct client *cl = clients[channel];
+      for(int id = 0; id < NUMCLIENTS; id++) {
+        struct client *cl = clients[id];
         if (cl->fd == -1) {
           continue;
         }
@@ -527,8 +562,8 @@ int main(int argc, char *argv[])
       // do this every 100 ms
       nextNetworkMaintenance = now + 100 * 1000;
       doneSomething = 1;
-      for(int channel = 0; channel < NUMCHANS; channel++) {
-        struct client *cl = clients[channel];
+      for(int id = 0; id < NUMCLIENTS; id++) {
+        struct client *cl = clients[id];
         //fprintf(stderr, "cl->fd %d\n", cl->fd);
         if (cl->fd == -1) {
           acceptClient(cl);
@@ -539,6 +574,11 @@ int main(int argc, char *argv[])
         // disconnect new clients on the listen port, we already have a client
         // only one connection / client per channel is supported
         acceptClientDiscard(cl);
+
+        if (id > NUMCHANS) {
+          continue;
+        }
+        int channel = id;
         size = 0;
         if(ioctl(cl->fd, FIONREAD, &size) < 0) {
           perror("fionread");
@@ -584,8 +624,8 @@ int main(int argc, char *argv[])
 
   *rx_rst &= ~1;
 
-  for(int channel = 0; channel < NUMCHANS; channel++) {
-    struct client *cl = clients[channel];
+  for(int id = 0; id < NUMCLIENTS; id++) {
+    struct client *cl = clients[id];
     if (cl->fd >= 0) {
       closeClient(cl);
     }
