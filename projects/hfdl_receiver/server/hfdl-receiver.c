@@ -19,7 +19,7 @@
 
 #define PHASE_BITS 29
 #define NUMCHANS 13
-#define TCP_PORT 1001
+#define TCP_PORT 9000
 
 // pretty sure fifo bytes should not be changed
 // also needs to be a multiple of system pagesize but that's usually 4K
