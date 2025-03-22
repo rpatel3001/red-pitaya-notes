@@ -458,55 +458,35 @@ int main(int argc, char *argv[])
       //fprintf(stderr, "rx_samples %6d > chunk samples %6d\n", rx_samples, CHUNK_SAMPLES);
       doneSomething = 1;
 
-      if (0) {
-        // at least in testing, this option is slower
-        // might differ on actual device
-        uint32_t *src = (uint32_t *) fifo;
-        uint32_t *target[NUMCHANS];
-        for(int channel = 0; channel < NUMCHANS; channel++) {
-          target[channel] = (uint32_t *) clients[channel]->sendqEnd;
+      memcpy(buffer, (void *) fifo, CHUNK_BYTES);
+
+      uint32_t *src = (uint32_t *) buffer;
+      for(int channel = 0; channel < NUMCHANS; channel++) {
+        struct client *cl = clients[channel];
+        if (cl->fd == -1) {
+          continue;
         }
-        for (int k = 0; k < CHUNK_SAMPLES / NUMCHANS; k++) {
-          for (int m = 0; m < NUMCHANS; m++) {
-            target[m][k] = src[k * NUMCHANS + m];
-          }
+
+        if (SAMPLE_SIZE != 4) {
+          fprintf(stderr, "incompatible sample size\n");
+          exit(EXIT_FAILURE);
         }
-        for (int channel = 0; channel < NUMCHANS; channel++) {
-          struct client *cl = clients[channel];
-          cl->sendqEnd += CHUNK_BYTES / NUMCHANS;
-          normalizeSendq(cl);
+
+        uint32_t *target = (uint32_t *) cl->sendqEnd;
+        int t = 0;
+        for (int k = channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
+          target[t++] = src[k];
         }
-      } else {
-        memcpy(buffer, (void *) fifo, CHUNK_BYTES);
+        int bytesCopied = t * SAMPLE_SIZE;
+        cl->sendqEnd += bytesCopied;
 
-        uint32_t *src = (uint32_t *) buffer;
-        for(int channel = 0; channel < NUMCHANS; channel++) {
-          struct client *cl = clients[channel];
-          if (cl->fd == -1) {
-            continue;
-          }
-
-          if (SAMPLE_SIZE != 4) {
-            fprintf(stderr, "incompatible sample size\n");
-            exit(EXIT_FAILURE);
-          }
-
-          uint32_t *target = (uint32_t *) cl->sendqEnd;
-          int t = 0;
-          for (int k = channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
-            target[t++] = src[k];
-          }
-          int bytesCopied = t * SAMPLE_SIZE;
-          cl->sendqEnd += bytesCopied;
-
-          if (bytesCopied != CHUNK_CHANNEL_BYTES) {
-            fprintf(stderr, "wrote wrong amount of bytes to sendq: %d should be: %d\n", bytesCopied, CHUNK_CHANNEL_BYTES);
-            exit(EXIT_FAILURE);
-          }
-
-          normalizeSendq(cl);
-          //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
+        if (bytesCopied != CHUNK_CHANNEL_BYTES) {
+          fprintf(stderr, "wrote wrong amount of bytes to sendq: %d should be: %d\n", bytesCopied, CHUNK_CHANNEL_BYTES);
+          exit(EXIT_FAILURE);
         }
+
+        normalizeSendq(cl);
+        //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
       }
 
       rx_samples -= CHUNK_SAMPLES;
