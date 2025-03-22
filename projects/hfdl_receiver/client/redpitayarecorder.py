@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import socket
-import numpy as np
 from struct import pack
 import sys
 import _thread
@@ -9,8 +8,7 @@ import argparse
 from signal import signal, SIGINT
 from time import sleep
 
-RX_DTYPE = np.int16  # Data type of received data
-#RX_DTYPE = np.uint8  # Data type of received data
+SAMPLE_SIZE=4  # Sample size of received data (CS16)
 
 def read_and_separate_data(device_ip, device_port, device_freq, device_corr):
     # Open a socket to the device
@@ -26,8 +24,8 @@ def read_and_separate_data(device_ip, device_port, device_freq, device_corr):
 
                 while True:
                     # Read a chunk of interleaved data (buffer is always full due to MSG_WAITALL)
-                    data = s.recv(BUFFER_SIZE * 2 * np.dtype(RX_DTYPE).itemsize, socket.MSG_WAITALL)
-                    if len(data) < BUFFER_SIZE * 2 * np.dtype(RX_DTYPE).itemsize:
+                    data = s.recv(BUFFER_SIZE * SAMPLE_SIZE, socket.MSG_WAITALL)
+                    if len(data) < BUFFER_SIZE * SAMPLE_SIZE:
                         s.close()
                         break  # Exit the loop if less than a full chunk is received
                     sys.stdout.buffer.write(bytes(data))
@@ -48,7 +46,7 @@ def parse_arguments():
     parser.add_argument('--port', '-p', type=int, default=9000, help="Port to receive data from the device (default: 9000)")
     parser.add_argument('--freq', '-f', type=float, help="Center frequency in kHz (required)")
     parser.add_argument('--corr', '-c', type=float, default=0.0, help="PPM correction to apply to the center frequency")
-    parser.add_argument('--buffer_size', '-b', type=int, default=1024, help="Size of each buffer (default: 1024)")
+    parser.add_argument('--buffer_size', '-b', type=int, default=1024, help="Size of each buffer (default: 1024, unit: samples)")
     return parser.parse_known_args()[0]
 
 if __name__ == '__main__':
