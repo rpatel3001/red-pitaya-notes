@@ -343,6 +343,21 @@ static int flushClient(struct client *c, int limit)
   //fprintf(stderr, "sent %d\n", bytesWritten);
   return bytesWritten;
 }
+static int readClientFrequency(struct client *cl, uint32_t *freq) {
+  uint32_t size = 0;
+  if(ioctl(cl->fd, FIONREAD, &size) < 0) {
+    perror("fionread");
+    return -1;
+  }
+  if(size < sizeof(*freq)) {
+    return 0;
+  }
+  if(recv(cl->fd, (char *)freq, sizeof(*freq), MSG_WAITALL) < 0) {
+    perror("recv");
+    return -1;
+  }
+  return 1;
+}
 
 int main(int argc, char *argv[])
 {
@@ -570,29 +585,23 @@ int main(int argc, char *argv[])
         // only one connection / client per channel is supported
         acceptClientDiscard(cl);
 
+        // only allow CS16 clients to set frequency
+        // CU8 clients just get the current setting
         if (id > NUMCHANS) {
           continue;
         }
-        int channel = id;
-        uint32_t size = 0;
-        if(ioctl(cl->fd, FIONREAD, &size) < 0) {
-          perror("fionread");
+
+        uint32_t freq;
+        int res = readClientFrequency(cl, &freq);
+        if (res < 0) {
           closeClient(cl);
           continue;
         }
-        uint32_t freq;
-        if(size >= sizeof(freq))
-        {
-          if(recv(cl->fd, (char *)&freq, sizeof(freq), MSG_WAITALL) < 0) {
-            perror("recv");
-            closeClient(cl);
-            continue;
-          }
-
+        if (res > 0) {
           emitTime(stderr);
           /* set rx phase increment */
           fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5));
-          rx_freq[channel] = (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5);
+          rx_freq[cl->channel] = (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5);
         }
       }
     }
