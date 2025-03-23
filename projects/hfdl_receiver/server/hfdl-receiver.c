@@ -351,13 +351,8 @@ int main(int argc, char *argv[])
   volatile uint8_t *rx_rst, *rx_sel;
   volatile uint16_t *rx_rate, *rx_cntr;
   volatile uint32_t *rx_freq;
-  uint32_t size, n;
   void *buffer;
-  int64_t us, usp;
-  int rx_samples = 0;
-  struct timespec watch;
-  int dropping = 0; // dropping data until buffer is half empty
-                    //
+
   emitTime(stderr);
   fprintf(stderr, "startup\n");
 
@@ -438,8 +433,8 @@ int main(int argc, char *argv[])
 
   *rx_rst |= 1;
 
+  struct timespec watch;
   startWatch(&watch);
-  us = microtime();
   int64_t last_iteration_us = 0;
   int64_t recvTime = 0;
   int64_t readTime = 0;
@@ -456,7 +451,7 @@ int main(int argc, char *argv[])
     *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
     #endif
 
-    rx_samples = *rx_cntr;
+    int rx_samples = *rx_cntr;
 
     if(rx_samples >= FIFO_SAMPLES)
     {
@@ -579,7 +574,7 @@ int main(int argc, char *argv[])
           continue;
         }
         int channel = id;
-        size = 0;
+        uint32_t size = 0;
         if(ioctl(cl->fd, FIONREAD, &size) < 0) {
           perror("fionread");
           closeClient(cl);
