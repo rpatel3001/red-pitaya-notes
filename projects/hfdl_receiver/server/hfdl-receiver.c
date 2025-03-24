@@ -36,6 +36,17 @@
 #define SAMPLE_SIZE 4 // in bytes
 #define FIFO_SAMPLES (FIFO_BYTES / SAMPLE_SIZE)
 
+// these values are set on start and reset
+uint16_t rx_rate_set = 1280;
+uint8_t rx_sel_set = 0;
+uint32_t rx_freq_set[NUMCHANS];
+
+
+// global for simpler resetRX function signature
+volatile uint8_t *rx_rst, *rx_sel;
+volatile uint16_t *rx_rate, *rx_cntr;
+volatile uint32_t *rx_freq;
+
 int interrupted = 0;
 
 void signal_handler(int sig)
@@ -356,13 +367,31 @@ static int readClientFrequency(struct client *cl, uint32_t *freq) {
   return 1;
 }
 
+static uint32_t getPhase(uint32_t freq) {
+  return (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5);
+}
+
+static void resetRX() {
+  // stop RX
+  *rx_rst &= ~1;
+
+  // it's possible the reset above also resets receive parameters, so set them again
+  *rx_sel = rx_sel_set;
+  *rx_rate = rx_rate_set;
+  for(int i = 0; i < NUMCHANS; ++i)
+  {
+    rx_freq[i] = rx_freq_set[i];
+  }
+  usleep(50); // for good measure
+
+  // start RX
+  *rx_rst |= 1;
+}
+
 int main(int argc, char *argv[])
 {
   int fd, i;
   volatile void *cfg, *sts, *fifo;
-  volatile uint8_t *rx_rst, *rx_sel;
-  volatile uint16_t *rx_rate, *rx_cntr;
-  volatile uint32_t *rx_freq;
   void *buffer;
 
   emitTime(stderr);
@@ -371,6 +400,12 @@ int main(int argc, char *argv[])
   if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
     fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
     return -1;
+  }
+
+  // set default frequency
+  for(i = 0; i < NUMCHANS; ++i)
+  {
+    rx_freq_set[i] = getPhase(600000);
   }
 
   //fprintf(stderr, "fifo samples %d\nchunk samples %d\n", FIFO_SAMPLES, CHUNK_SAMPLES);
@@ -436,15 +471,7 @@ int main(int argc, char *argv[])
   signal(SIGHUP, signal_handler);
   signal(SIGQUIT, signal_handler);
 
-  *rx_rst &= ~1;
-  *rx_sel = 0;
-  *rx_rate = 1280;
-  for(i = 0; i < NUMCHANS; ++i)
-  {
-    rx_freq[i] = (uint32_t)floor(600000 / 122.88e6 * (1 << PHASE_BITS) + 0.5);
-  }
-
-  *rx_rst |= 1;
+  resetRX();
 
   struct timespec watch;
   startWatch(&watch);
@@ -469,12 +496,11 @@ int main(int argc, char *argv[])
     if(rx_samples >= FIFO_SAMPLES)
     {
       emitTime(stderr);
-      fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
+      fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d ",
           last_iteration_us, rx_samples, FIFO_SAMPLES);
-      fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
-          readTime, flushTime, recvTime, sleepTime);
-      *rx_rst &= ~1;
-      *rx_rst |= 1;
+      fprintf(stderr, "readTime %5lld recvTime %5lld flushTime %5lld sleepTime %5lld\n",
+          readTime, recvTime, flushTime, sleepTime);
+      resetRX();
       rx_samples = 0;
       #ifdef TEST
       *rx_cntr = 0;
@@ -581,8 +607,10 @@ int main(int argc, char *argv[])
         if (res > 0) {
           emitTime(stderr);
           /* set rx phase increment */
-          fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5));
-          rx_freq[cl->channel] = (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5);
+          uint32_t phase = getPhase(freq);
+          fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, phase);
+          rx_freq[cl->channel] = phase;
+          rx_freq_set[cl->channel] = phase; // used on reset to set frequency to previous value
         }
       }
       if (sysCalls > 0) {
