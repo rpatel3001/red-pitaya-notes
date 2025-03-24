@@ -77,6 +77,7 @@ struct client
   int format;
   int channel;
   uint64_t bytesDropped;
+  int64_t lastProgress;
 };
 
 static int64_t microtime(void) {
@@ -253,6 +254,7 @@ static void acceptClient(struct client *c) {
   c->sendqEnd = c->sendq;
 
   c->bytesDropped = 0;
+  c->lastProgress = microtime();
 }
 
 static int closeClient(struct client *c) {
@@ -304,7 +306,7 @@ static void normalizeSendq(struct client *c)
   }
 }
 
-static int flushClient(struct client *c, int min, int limit)
+static int flushClient(struct client *c, int min, int limit, int64_t now)
 {
   static int64_t byteCounter;
   int debug = 0;
@@ -346,6 +348,7 @@ static int flushClient(struct client *c, int min, int limit)
     // Advance buffer
     c->sendqStart += bytesWritten;
     normalizeSendq(c);
+    c->lastProgress = now;
   }
 
   //fprintf(stderr, "sent %d\n", bytesWritten);
@@ -566,8 +569,8 @@ int main(int argc, char *argv[])
 
     readTime = lapWatch(&watch);
 
-    now = microtime();
     if (!doneSomething && now > nextNetworkMaintenance) {
+      now = microtime();
       //fprintf(stderr, "net maintenance\n");
       static int id;
       // do this every 100 ms
@@ -621,6 +624,7 @@ int main(int argc, char *argv[])
     recvTime = lapWatch(&watch);
 
     if (!doneSomething) {
+      now = microtime();
       int sysCalls = 0;
       int totalWritten = 0;
       static int id;
@@ -637,7 +641,7 @@ int main(int argc, char *argv[])
           continue;
         }
         //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
-        int bytesWritten = flushClient(cl, sendSize, sendSize);
+        int bytesWritten = flushClient(cl, sendSize, sendSize, now);
 
         if (bytesWritten == -1) {
           closeClient(cl);
@@ -651,6 +655,10 @@ int main(int argc, char *argv[])
         if (bytesWritten == -2) {
           sysCalls++;
           // send was asked to send data but likely the OS buffer was full
+          if (now - cl->lastProgress > 2 * 1000 * 1000) {
+            // if send hasn't actually sent any bytes in 2 second, disconnect this client
+            closeClient(cl);
+          }
         }
       }
       if (totalWritten >= sendSize) {
