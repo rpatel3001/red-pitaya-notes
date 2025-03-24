@@ -540,45 +540,8 @@ int main(int argc, char *argv[])
 
     readTime = lapWatch(&watch);
 
-    if (!doneSomething) {
-      int sysCalls = 0;
-      static int id;
-      if (id == NUMCLIENTS) {
-        id = 0;
-      }
-      for(; id < NUMCLIENTS && sysCalls < 3; id++) {
-        struct client *cl = clients[id];
-        if (cl->fd == -1) {
-          continue;
-        }
-        //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
-        // network packets are typically 1480 or 1500 bytes on a LAN
-        // just assume 1450 for good measure
-        // always send data equivalent to 6 packets per syscall
-        int bytesWritten = flushClient(cl, 6 * 1450, 6 * 1450);
-
-        if (bytesWritten == -1) {
-          closeClient(cl);
-          continue;
-        }
-
-        if (bytesWritten > 0) {
-          sysCalls++;
-        }
-        if (bytesWritten == -2) {
-          sysCalls++;
-          // send was asked to send data but likely the OS buffer was full
-        }
-      }
-      if (sysCalls > 0) {
-        doneSomething = 1;
-      }
-    }
-
-    flushTime = lapWatch(&watch);
-
     now = microtime();
-    if (now > nextNetworkMaintenance) {
+    if (!doneSomething && now > nextNetworkMaintenance) {
       //fprintf(stderr, "net maintenance\n");
       static int id;
       // do this every 100 ms
@@ -628,6 +591,43 @@ int main(int argc, char *argv[])
     }
 
     recvTime = lapWatch(&watch);
+
+    if (!doneSomething) {
+      int sysCalls = 0;
+      static int id;
+      if (id == NUMCLIENTS) {
+        id = 0;
+      }
+      for(; id < NUMCLIENTS && sysCalls < 3; id++) {
+        struct client *cl = clients[id];
+        if (cl->fd == -1) {
+          continue;
+        }
+        //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
+        // network packets are typically 1480 or 1500 bytes on a LAN
+        // just assume 1450 for good measure
+        // always send data equivalent to 6 packets per syscall
+        int bytesWritten = flushClient(cl, 6 * 1450, 6 * 1450);
+
+        if (bytesWritten == -1) {
+          closeClient(cl);
+          continue;
+        }
+
+        if (bytesWritten > 0) {
+          sysCalls++;
+        }
+        if (bytesWritten == -2) {
+          sysCalls++;
+          // send was asked to send data but likely the OS buffer was full
+        }
+      }
+      if (sysCalls > 0) {
+        doneSomething = 1;
+      }
+    }
+
+    flushTime = lapWatch(&watch);
 
     if (!doneSomething) {
       usleep(500);
