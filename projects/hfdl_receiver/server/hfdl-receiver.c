@@ -321,7 +321,7 @@ static int flushClient(struct client *c, int min, int limit)
   // If we get -1, it's only fatal if it's not EAGAIN/EWOULDBLOCK
   if (bytesWritten < 0 && (err == EAGAIN || err == EWOULDBLOCK)) {
     //fprintf(stderr, "block\n");
-    return 0;
+    return -2;
   }
   if (bytesWritten < 0) {
     // send error
@@ -374,6 +374,7 @@ int main(int argc, char *argv[])
   }
 
   //fprintf(stderr, "fifo samples %d\nchunk samples %d\n", FIFO_SAMPLES, CHUNK_SAMPLES);
+  //fprintf(stderr, "chunk_channel_bytes %d\n", CHUNK_CHANNEL_BYTES);
 
   if((buffer = malloc(CHUNK_BYTES)) == NULL)
   {
@@ -540,40 +541,57 @@ int main(int argc, char *argv[])
     readTime = lapWatch(&watch);
 
     if (!doneSomething) {
-      for(int id = 0; id < NUMCLIENTS; id++) {
+      int sysCalls = 0;
+      static int id;
+      if (id == NUMCLIENTS) {
+        id = 0;
+      }
+      for(; id < NUMCLIENTS && sysCalls < 3; id++) {
         struct client *cl = clients[id];
         if (cl->fd == -1) {
           continue;
         }
         //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
-        // to ensure flushClient doesn't take super long,
-        // limit each send syscall to 6 * 1450 which is roughly 6 packets
-        // but don't use a syscall if we have less than 2 packets to flush
-        int bytesWritten = flushClient(cl, 2 * 1450, 8 * 1450);
+        // network packets are typically 1480 or 1500 bytes on a LAN
+        // just assume 1450 for good measure
+        // always send data equivalent to 6 packets per syscall
+        int bytesWritten = flushClient(cl, 6 * 1450, 6 * 1450);
 
-        if (bytesWritten < 0) {
+        if (bytesWritten == -1) {
           closeClient(cl);
           continue;
         }
 
         if (bytesWritten > 0) {
-          doneSomething = 1;
+          sysCalls++;
         }
+        if (bytesWritten == -2) {
+          sysCalls++;
+          // send was asked to send data but likely the OS buffer was full
+        }
+      }
+      if (sysCalls > 0) {
+        doneSomething = 1;
       }
     }
 
     flushTime = lapWatch(&watch);
 
     now = microtime();
-    if (!doneSomething && now > nextNetworkMaintenance) {
+    if (now > nextNetworkMaintenance) {
       //fprintf(stderr, "net maintenance\n");
+      static int id;
       // do this every 100 ms
-      nextNetworkMaintenance = now + 100 * 1000;
-      doneSomething = 1;
-      for(int id = 0; id < NUMCLIENTS; id++) {
+      if (id == NUMCLIENTS) {
+        id = 0;
+        nextNetworkMaintenance = now + 100 * 1000;
+      }
+      int sysCalls = 0;
+      for(; id < NUMCLIENTS && sysCalls < 3; id++) {
         struct client *cl = clients[id];
         //fprintf(stderr, "cl->fd %d\n", cl->fd);
         if (cl->fd == -1) {
+          sysCalls++;
           acceptClient(cl);
         }
         if (cl->fd == -1) {
@@ -581,6 +599,7 @@ int main(int argc, char *argv[])
         }
         // disconnect new clients on the listen port, we already have a client
         // only one connection / client per channel is supported
+        sysCalls++;
         acceptClientDiscard(cl);
 
         // only allow CS16 clients to set frequency
@@ -589,6 +608,7 @@ int main(int argc, char *argv[])
           continue;
         }
 
+        sysCalls++;
         uint32_t freq;
         int res = readClientFrequency(cl, &freq);
         if (res < 0) {
@@ -601,6 +621,9 @@ int main(int argc, char *argv[])
           fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5));
           rx_freq[cl->channel] = (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5);
         }
+      }
+      if (sysCalls > 0) {
+        doneSomething = 1;
       }
     }
 
