@@ -61,8 +61,6 @@ struct client
   unsigned char *sendqEnd; // where the data in the sendQ starts
   int sendqMax;
   int fd; // File descriptor
-  int64_t last_flush;
-  int64_t last_send;
   int listenPort;
   int listenFd;
   int format;
@@ -295,15 +293,14 @@ static void normalizeSendq(struct client *c)
   }
 }
 
-static int flushClient(struct client *c, int limit)
+static int flushClient(struct client *c, int min, int limit)
 {
   static int64_t byteCounter;
   int debug = 0;
   int toWrite = sendqLen(c);
 
-  // only flush if we have a good amount of data
-  if (toWrite < 8 * 1400) {
-    //c->last_flush = now;
+  // nothing to do if we have nothing or too little to write
+  if (toWrite < min || toWrite <= 0) {
     return 0;
   }
 
@@ -550,15 +547,16 @@ int main(int argc, char *argv[])
         }
         //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
         // to ensure flushClient doesn't take super long,
-        // limit each send syscall to the chunk size
-        int bytesWritten = flushClient(cl, CHUNK_BYTES);
+        // limit each send syscall to 6 * 1450 which is roughly 6 packets
+        // but don't use a syscall if we have less than 2 packets to flush
+        int bytesWritten = flushClient(cl, 2 * 1450, 8 * 1450);
 
         if (bytesWritten < 0) {
           closeClient(cl);
           continue;
         }
 
-        if (bytesWritten >= CHUNK_CHANNEL_BYTES) {
+        if (bytesWritten > 0) {
           doneSomething = 1;
         }
       }
