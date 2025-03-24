@@ -622,20 +622,22 @@ int main(int argc, char *argv[])
 
     if (!doneSomething) {
       int sysCalls = 0;
+      int totalWritten = 0;
       static int id;
       if (id == NUMCLIENTS) {
         id = 0;
       }
+      // network packets are typically 1480 or 1500 bytes on a LAN
+      // just assume 1450 for good measure
+      // always send data equivalent to 8 packets per syscall
+      int sendSize = 8 * 1450;
       for(; id < NUMCLIENTS && sysCalls < 3; id++) {
         struct client *cl = clients[id];
         if (cl->fd == -1) {
           continue;
         }
         //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
-        // network packets are typically 1480 or 1500 bytes on a LAN
-        // just assume 1450 for good measure
-        // always send data equivalent to 6 packets per syscall
-        int bytesWritten = flushClient(cl, 6 * 1450, 6 * 1450);
+        int bytesWritten = flushClient(cl, sendSize, sendSize);
 
         if (bytesWritten == -1) {
           closeClient(cl);
@@ -644,14 +646,16 @@ int main(int argc, char *argv[])
 
         if (bytesWritten > 0) {
           sysCalls++;
+          totalWritten += bytesWritten;
         }
         if (bytesWritten == -2) {
           sysCalls++;
           // send was asked to send data but likely the OS buffer was full
         }
       }
-      if (sysCalls > 0) {
+      if (totalWritten >= sendSize) {
         doneSomething = 1;
+        // if not much data was written, sleep instead of bombarding the OS with further send calls
       }
     }
 
