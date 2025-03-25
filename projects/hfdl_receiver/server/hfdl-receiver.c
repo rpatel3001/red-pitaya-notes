@@ -596,7 +596,7 @@ int main(int argc, char *argv[])
 
         // only allow CS16 clients to set frequency
         // CU8 clients just get the current setting
-        if (id > NUMCHANS) {
+        if (id >= NUMCHANS) {
           continue;
         }
 
