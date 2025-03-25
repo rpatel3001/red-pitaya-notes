@@ -1,9 +1,9 @@
 configs:
   client:
     default:
-      address: localhost
+      address: web-888.local
       recorder_path: ../red-pitaya-notes/projects/hfdl_receiver/client/redpitayarecorder.py
-      channel_width: 256000
+      channel_width: 307200
   decoder:
     default:
 #      sample-rates: [256000]
@@ -63,6 +63,10 @@ observer:
       config: web888
       client:
         port: 9011
+    redpitaya-12:
+      config: web888
+      client:
+        port: 9012
   local_receivers:
     - redpitaya-00
     - redpitaya-01
@@ -76,6 +80,7 @@ observer:
     - redpitaya-09
     - redpitaya-10
     - redpitaya-11
+    - redpitaya-12
   conductor:
     ranked_stations:
     - 4
