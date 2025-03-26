@@ -1,0 +1,3 @@
+if [ "$reason" = PREINIT ] && [ -f /media/mmcblk0p1/hwaddr ]; then
+    ip link set dev eth0 address $(cat /media/mmcblk0p1/hwaddr)
+fi
