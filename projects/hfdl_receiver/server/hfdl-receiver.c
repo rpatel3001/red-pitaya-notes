@@ -20,6 +20,12 @@
 #define PHASE_BITS 29
 #define NUMCHANS 13
 #define TCP_PORT 9000
+#define TCP_PORT_CU8 8000
+
+#define NUMCLIENTS (2 * NUMCHANS)
+
+#define CS16 (0)
+#define CU8 (1)
 
 // pretty sure fifo bytes should not be changed
 // also needs to be a multiple of system pagesize but that's usually 4K
@@ -29,6 +35,17 @@
 
 #define SAMPLE_SIZE 4 // in bytes
 #define FIFO_SAMPLES (FIFO_BYTES / SAMPLE_SIZE)
+
+// these values are set on start and reset
+uint16_t rx_rate_set = 1280;
+uint8_t rx_sel_set = 0;
+uint32_t rx_freq_set[NUMCHANS];
+
+
+// global for simpler resetRX function signature
+volatile uint8_t *rx_rst, *rx_sel;
+volatile uint16_t *rx_rate, *rx_cntr;
+volatile uint32_t *rx_freq;
 
 int interrupted = 0;
 
@@ -41,6 +58,7 @@ void signal_handler(int sig)
 #define CHUNK_BYTES (CHUNK_SAMPLES * SAMPLE_SIZE)
 #define CHUNK_CHANNEL_BYTES (CHUNK_BYTES / NUMCHANS)
 
+// actually 25% more for CU8 buffers but we should have 512M to work with
 #ifndef TEST
   #define TOTAL_NET_BUFFER (256 * 1024 * 1024)
 #else
@@ -54,11 +72,12 @@ struct client
   unsigned char *sendqEnd; // where the data in the sendQ starts
   int sendqMax;
   int fd; // File descriptor
-  int64_t last_flush;
-  int64_t last_send;
   int listenPort;
   int listenFd;
+  int format;
+  int channel;
   uint64_t bytesDropped;
+  int64_t lastProgress;
 };
 
 static int64_t microtime(void) {
@@ -129,12 +148,12 @@ static int sendqLen(struct client *c)
     return ((c->sendqEnd - c->sendq) + (c->sendq + c->sendqMax - c->sendqStart));
   }
 }
-static void allocateClient(struct client *c) {
+static void allocateClient(struct client *c, int sendqMax) {
   // clear client struct
   memset(c, 0, sizeof(struct client));
 
   // multiple of CHUNK_CHANNEL_BYTES
-  c->sendqMax = TOTAL_NET_BUFFER / NUMCHANS / CHUNK_CHANNEL_BYTES * CHUNK_CHANNEL_BYTES;
+  c->sendqMax = sendqMax / CHUNK_CHANNEL_BYTES * CHUNK_CHANNEL_BYTES;
 
   //fprintf(stderr, "sendqmax: %d\n", c->sendqMax);
   c->sendq = malloc(c->sendqMax);
@@ -176,7 +195,7 @@ static void disconnectFd(int fd) {
 
 static void listenClient(struct client *c, int port) {
   emitTime(stderr);
-  fprintf(stderr, "%d: open listen port\n", port);
+  fprintf(stderr, "%d: open listen port %s\n", port, c->format == CS16 ? "CS16" : "CU8");
 
   c->listenPort = port;
   c->listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -235,6 +254,7 @@ static void acceptClient(struct client *c) {
   c->sendqEnd = c->sendq;
 
   c->bytesDropped = 0;
+  c->lastProgress = microtime();
 }
 
 static int closeClient(struct client *c) {
@@ -286,15 +306,14 @@ static void normalizeSendq(struct client *c)
   }
 }
 
-static int flushClient(struct client *c, int limit)
+static int flushClient(struct client *c, int min, int limit, int64_t now)
 {
   static int64_t byteCounter;
   int debug = 0;
   int toWrite = sendqLen(c);
 
-  // only flush if we have a good amount of data
-  if (toWrite < 8 * 1400) {
-    //c->last_flush = now;
+  // nothing to do if we have nothing or too little to write
+  if (toWrite < min || toWrite <= 0) {
     return 0;
   }
 
@@ -315,7 +334,7 @@ static int flushClient(struct client *c, int limit)
   // If we get -1, it's only fatal if it's not EAGAIN/EWOULDBLOCK
   if (bytesWritten < 0 && (err == EAGAIN || err == EWOULDBLOCK)) {
     //fprintf(stderr, "block\n");
-    return 0;
+    return -2;
   }
   if (bytesWritten < 0) {
     // send error
@@ -329,26 +348,55 @@ static int flushClient(struct client *c, int limit)
     // Advance buffer
     c->sendqStart += bytesWritten;
     normalizeSendq(c);
+    c->lastProgress = now;
   }
 
   //fprintf(stderr, "sent %d\n", bytesWritten);
   return bytesWritten;
+}
+static int readClientFrequency(struct client *cl, uint32_t *freq) {
+  uint32_t size = 0;
+  if(ioctl(cl->fd, FIONREAD, &size) < 0) {
+    perror("fionread");
+    return -1;
+  }
+  if(size < sizeof(*freq)) {
+    return 0;
+  }
+  if(recv(cl->fd, (char *)freq, sizeof(*freq), MSG_WAITALL) < 0) {
+    perror("recv");
+    return -1;
+  }
+  return 1;
+}
+
+static uint32_t getPhase(uint32_t freq) {
+  return (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5);
+}
+
+static void resetRX() {
+  // stop RX
+  *rx_rst &= ~1;
+
+  // it's possible the reset above also resets receive parameters, so set them again
+  *rx_sel = rx_sel_set;
+  *rx_rate = rx_rate_set;
+  for(int i = 0; i < NUMCHANS; ++i)
+  {
+    rx_freq[i] = rx_freq_set[i];
+  }
+  usleep(50); // for good measure
+
+  // start RX
+  *rx_rst |= 1;
 }
 
 int main(int argc, char *argv[])
 {
   int fd, i;
   volatile void *cfg, *sts, *fifo;
-  volatile uint8_t *rx_rst, *rx_sel;
-  volatile uint16_t *rx_rate, *rx_cntr;
-  volatile uint32_t *rx_freq;
-  uint32_t size, n;
   void *buffer;
-  int64_t us, usp;
-  int rx_samples = 0;
-  struct timespec watch;
-  int dropping = 0; // dropping data until buffer is half empty
-                    //
+
   emitTime(stderr);
   fprintf(stderr, "startup\n");
 
@@ -357,7 +405,14 @@ int main(int argc, char *argv[])
     return -1;
   }
 
+  // set default frequency
+  for(i = 0; i < NUMCHANS; ++i)
+  {
+    rx_freq_set[i] = getPhase(600000);
+  }
+
   //fprintf(stderr, "fifo samples %d\nchunk samples %d\n", FIFO_SAMPLES, CHUNK_SAMPLES);
+  //fprintf(stderr, "chunk_channel_bytes %d\n", CHUNK_CHANNEL_BYTES);
 
   if((buffer = malloc(CHUNK_BYTES)) == NULL)
   {
@@ -391,13 +446,24 @@ int main(int argc, char *argv[])
 
   rx_cntr = (uint16_t *)(sts + 0);
 
-  struct client client_back[NUMCHANS];
-  struct client *clients[NUMCHANS];
+  struct client client_back[NUMCLIENTS];
+  struct client *clients[NUMCLIENTS];
   for(i = 0; i < NUMCHANS; ++i) {
     clients[i] = &client_back[i];
     struct client *cl = clients[i];
-    allocateClient(cl);
+    allocateClient(cl, TOTAL_NET_BUFFER / NUMCHANS);
+    cl->format = CS16;
+    cl->channel = i;
     listenClient(cl, TCP_PORT + i);
+    // for simplicity: one connection per listen port
+  }
+  for(i = NUMCHANS; i < 2 * NUMCHANS; ++i) {
+    clients[i] = &client_back[i];
+    struct client *cl = clients[i];
+    allocateClient(cl, TOTAL_NET_BUFFER / 4 / NUMCHANS); // less buffer for CU8 outputs
+    cl->format = CU8;
+    cl->channel = i - NUMCHANS;
+    listenClient(cl, TCP_PORT_CU8 + (i - NUMCHANS));
     // for simplicity: one connection per listen port
   }
 
@@ -408,18 +474,10 @@ int main(int argc, char *argv[])
   signal(SIGHUP, signal_handler);
   signal(SIGQUIT, signal_handler);
 
-  *rx_rst &= ~1;
-  *rx_sel = 0;
-  *rx_rate = 1280;
-  for(i = 0; i < NUMCHANS; ++i)
-  {
-    rx_freq[i] = (uint32_t)floor(600000 / 122.88e6 * (1 << PHASE_BITS) + 0.5);
-  }
+  resetRX();
 
-  *rx_rst |= 1;
-
+  struct timespec watch;
   startWatch(&watch);
-  us = microtime();
   int64_t last_iteration_us = 0;
   int64_t recvTime = 0;
   int64_t readTime = 0;
@@ -436,17 +494,16 @@ int main(int argc, char *argv[])
     *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
     #endif
 
-    rx_samples = *rx_cntr;
+    int rx_samples = *rx_cntr;
 
     if(rx_samples >= FIFO_SAMPLES)
     {
       emitTime(stderr);
-      fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d\n",
+      fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d ",
           last_iteration_us, rx_samples, FIFO_SAMPLES);
-      fprintf(stderr, "timers were: readTime %5lld flushTime %5lld recvTime %5lld sleepTime %5lld\n",
-          readTime, flushTime, recvTime, sleepTime);
-      *rx_rst &= ~1;
-      *rx_rst |= 1;
+      fprintf(stderr, "readTime %5lld recvTime %5lld flushTime %5lld sleepTime %5lld\n",
+          readTime, recvTime, flushTime, sleepTime);
+      resetRX();
       rx_samples = 0;
       #ifdef TEST
       *rx_cntr = 0;
@@ -458,42 +515,37 @@ int main(int argc, char *argv[])
       //fprintf(stderr, "rx_samples %6d > chunk samples %6d\n", rx_samples, CHUNK_SAMPLES);
       doneSomething = 1;
 
-      if (0) {
-        // at least in testing, this option is slower
-        // might differ on actual device
-        uint32_t *src = (uint32_t *) fifo;
-        uint32_t *target[NUMCHANS];
-        for(int channel = 0; channel < NUMCHANS; channel++) {
-          target[channel] = (uint32_t *) clients[channel]->sendqEnd;
-        }
-        for (int k = 0; k < CHUNK_SAMPLES / NUMCHANS; k++) {
-          for (int m = 0; m < NUMCHANS; m++) {
-            target[m][k] = src[k * NUMCHANS + m];
-          }
-        }
-        for (int channel = 0; channel < NUMCHANS; channel++) {
-          struct client *cl = clients[channel];
-          cl->sendqEnd += CHUNK_BYTES / NUMCHANS;
-          normalizeSendq(cl);
-        }
-      } else {
-        memcpy(buffer, (void *) fifo, CHUNK_BYTES);
+      memcpy(buffer, (void *) fifo, CHUNK_BYTES);
 
-        uint32_t *src = (uint32_t *) buffer;
-        for(int channel = 0; channel < NUMCHANS; channel++) {
-          struct client *cl = clients[channel];
-          if (cl->fd == -1) {
-            continue;
-          }
+      for(int id = 0; id < NUMCLIENTS; id++) {
+        struct client *cl = clients[id];
+        if (cl->fd == -1) {
+          continue;
+        }
 
+        if (cl->format == CU8) {
+          int16_t *src = (int16_t *) buffer;
+          uint8_t *target = (uint8_t *) cl->sendqEnd;
+          int t = 0;
+          for (int k = cl->channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
+            target[t++] = (uint8_t) ((src[2 * k + 0] >> 8) + 127);
+            target[t++] = (uint8_t) ((src[2 * k + 1] >> 8) + 127);
+          }
+          cl->sendqEnd += t;
+          if (t != CHUNK_CHANNEL_BYTES / 2) {
+            fprintf(stderr, "CU8 to sendq: %d should be: %d\n", t, CHUNK_CHANNEL_BYTES / 2);
+            exit(EXIT_FAILURE);
+          }
+        } else if (cl->format == CS16) {
           if (SAMPLE_SIZE != 4) {
             fprintf(stderr, "incompatible sample size\n");
             exit(EXIT_FAILURE);
           }
 
+          uint32_t *src = (uint32_t *) buffer;
           uint32_t *target = (uint32_t *) cl->sendqEnd;
           int t = 0;
-          for (int k = channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
+          for (int k = cl->channel; k < CHUNK_BYTES / SAMPLE_SIZE; k += NUMCHANS) {
             target[t++] = src[k];
           }
           int bytesCopied = t * SAMPLE_SIZE;
@@ -503,10 +555,10 @@ int main(int argc, char *argv[])
             fprintf(stderr, "wrote wrong amount of bytes to sendq: %d should be: %d\n", bytesCopied, CHUNK_CHANNEL_BYTES);
             exit(EXIT_FAILURE);
           }
-
-          normalizeSendq(cl);
-          //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
         }
+
+        normalizeSendq(cl);
+        //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
       }
 
       rx_samples -= CHUNK_SAMPLES;
@@ -517,40 +569,21 @@ int main(int argc, char *argv[])
 
     readTime = lapWatch(&watch);
 
-    if (!doneSomething) {
-      for(int channel = 0; channel < NUMCHANS; channel++) {
-        struct client *cl = clients[channel];
-        if (cl->fd == -1) {
-          continue;
-        }
-        //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
-        // to ensure flushClient doesn't take super long,
-        // limit each send syscall to the chunk size
-        int bytesWritten = flushClient(cl, CHUNK_BYTES);
-
-        if (bytesWritten < 0) {
-          closeClient(cl);
-          continue;
-        }
-
-        if (bytesWritten >= CHUNK_CHANNEL_BYTES) {
-          doneSomething = 1;
-        }
-      }
-    }
-
-    flushTime = lapWatch(&watch);
-
-    now = microtime();
     if (!doneSomething && now > nextNetworkMaintenance) {
+      now = microtime();
       //fprintf(stderr, "net maintenance\n");
+      static int id;
       // do this every 100 ms
-      nextNetworkMaintenance = now + 100 * 1000;
-      doneSomething = 1;
-      for(int channel = 0; channel < NUMCHANS; channel++) {
-        struct client *cl = clients[channel];
+      if (id == NUMCLIENTS) {
+        id = 0;
+        nextNetworkMaintenance = now + 100 * 1000;
+      }
+      int sysCalls = 0;
+      for(; id < NUMCLIENTS && sysCalls < 3; id++) {
+        struct client *cl = clients[id];
         //fprintf(stderr, "cl->fd %d\n", cl->fd);
         if (cl->fd == -1) {
+          sysCalls++;
           acceptClient(cl);
         }
         if (cl->fd == -1) {
@@ -558,31 +591,83 @@ int main(int argc, char *argv[])
         }
         // disconnect new clients on the listen port, we already have a client
         // only one connection / client per channel is supported
+        sysCalls++;
         acceptClientDiscard(cl);
-        size = 0;
-        if(ioctl(cl->fd, FIONREAD, &size) < 0) {
-          perror("fionread");
+
+        // only allow CS16 clients to set frequency
+        // CU8 clients just get the current setting
+        if (id >= NUMCHANS) {
+          continue;
+        }
+
+        sysCalls++;
+        uint32_t freq;
+        int res = readClientFrequency(cl, &freq);
+        if (res < 0) {
           closeClient(cl);
           continue;
         }
-        uint32_t freq;
-        if(size >= sizeof(freq))
-        {
-          if(recv(cl->fd, (char *)&freq, sizeof(freq), MSG_WAITALL) < 0) {
-            perror("recv");
-            closeClient(cl);
-            continue;
-          }
-
+        if (res > 0) {
           emitTime(stderr);
           /* set rx phase increment */
-          fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5));
-          rx_freq[channel] = (uint32_t)floor(freq / 122.88e6 * (1 << PHASE_BITS) + 0.5);
+          uint32_t phase = getPhase(freq);
+          fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, phase);
+          rx_freq[cl->channel] = phase;
+          rx_freq_set[cl->channel] = phase; // used on reset to set frequency to previous value
         }
+      }
+      if (sysCalls > 0) {
+        doneSomething = 1;
       }
     }
 
     recvTime = lapWatch(&watch);
+
+    if (!doneSomething) {
+      now = microtime();
+      int sysCalls = 0;
+      int totalWritten = 0;
+      static int id;
+      if (id == NUMCLIENTS) {
+        id = 0;
+      }
+      // network packets are typically 1480 or 1500 bytes on a LAN
+      // just assume 1450 for good measure
+      // always send data equivalent to 8 packets per syscall
+      int sendSize = 8 * 1450;
+      for(; id < NUMCLIENTS && sysCalls < 3; id++) {
+        struct client *cl = clients[id];
+        if (cl->fd == -1) {
+          continue;
+        }
+        //fprintf(stderr, "%d: sendq: %d\n", cl->listenPort, sendqLen(cl));
+        int bytesWritten = flushClient(cl, sendSize, sendSize, now);
+
+        if (bytesWritten == -1) {
+          closeClient(cl);
+          continue;
+        }
+
+        if (bytesWritten > 0) {
+          sysCalls++;
+          totalWritten += bytesWritten;
+        }
+        if (bytesWritten == -2) {
+          sysCalls++;
+          // send was asked to send data but likely the OS buffer was full
+          if (now - cl->lastProgress > 2 * 1000 * 1000) {
+            // if send hasn't actually sent any bytes in 2 second, disconnect this client
+            closeClient(cl);
+          }
+        }
+      }
+      if (totalWritten >= sendSize) {
+        doneSomething = 1;
+        // if not much data was written, sleep instead of bombarding the OS with further send calls
+      }
+    }
+
+    flushTime = lapWatch(&watch);
 
     if (!doneSomething) {
       usleep(500);
@@ -604,8 +689,8 @@ int main(int argc, char *argv[])
 
   *rx_rst &= ~1;
 
-  for(int channel = 0; channel < NUMCHANS; channel++) {
-    struct client *cl = clients[channel];
+  for(int id = 0; id < NUMCLIENTS; id++) {
+    struct client *cl = clients[id];
     if (cl->fd >= 0) {
       closeClient(cl);
     }
