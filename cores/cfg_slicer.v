@@ -29,10 +29,10 @@ module cfg_slicer #
   localparam integer MAX_FRAC_SHIFT = FIR_OUT_WIDTH - SAMP_WIDTH - 2;
   localparam integer FULL_FIR_WIDTH = $ceil(FIR_OUT_WIDTH/8)*8;
 
+  localparam signed [15:0] MAX_16 = (1 << 15) - 1;
+  localparam signed [15:0] MIN_16 = -(1 << 15);
   localparam signed [15:0] MAX_15 = (1 << 14) - 1;
   localparam signed [15:0] MIN_15 = -(1 << 14);
-  localparam signed [15:0] MAX_14 = (1 << 13) - 1;
-  localparam signed [15:0] MIN_14 = -(1 << 13);
 
   wire [PHASE_WIDTH-1:0] phase[NUM_CHANS-1:0];
   wire [DDS_WIDTH-1:0] ddsout[NUM_CHANS-1:0];
@@ -193,7 +193,7 @@ module cfg_slicer #
       fracshift <= fracshift - 1;
       lowsigcntr <= 0;
     end else begin
-      if (shiftfir < MAX_14 && shiftfir > MIN_14) begin
+      if (shiftfir < MAX_15 && shiftfir > MIN_15) begin
         lowsigcntr <= lowsigcntr + 1;
       end else begin
         lowsigcntr <= 0;
@@ -201,7 +201,7 @@ module cfg_slicer #
     end
 
     if (shiftcntr > ONE_SEC) begin
-      if (shiftfir > MAX_15 || shiftfir < MIN_15) begin
+      if (shiftfir > MAX_16 || shiftfir < MIN_16) begin
         fracshift <= fracshift + 1;
         shiftcntr <= 0;
       end
