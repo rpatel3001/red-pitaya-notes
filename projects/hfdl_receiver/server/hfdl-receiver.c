@@ -167,6 +167,11 @@ static void allocateClient(struct client *c, int sendqMax) {
   c->fd = -1; // indicate this client is not connected
 }
 
+static void destroyClient(struct client *c) {
+  free(c->sendq);
+  c->sendq = NULL;
+}
+
 static void setNonblocking(int fd) {
   /* Set the socket nonblocking.
    * Note that fcntl(2) for F_GETFL and F_SETFL can't be
@@ -698,7 +703,15 @@ int main(int argc, char *argv[])
       disconnectFd(cl->listenFd);
       cl->listenFd = -1;
     }
+    destroyClient(cl);
   }
+
+  free(buffer);
+  #ifdef TEST
+  free((void *) cfg);
+  free((void *) sts);
+  free((void *) fifo);
+  #endif
 
   return EXIT_SUCCESS;
 }
