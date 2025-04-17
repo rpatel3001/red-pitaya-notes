@@ -60,7 +60,7 @@ void signal_handler(int sig)
 
 // actually 25% more for CU8 buffers but we should have 512M to work with
 #ifndef TEST
-  #define TOTAL_NET_BUFFER (256 * 1024 * 1024)
+  #define TOTAL_NET_BUFFER (128 * 1024 * 1024)
 #else
   #define TOTAL_NET_BUFFER (16 * 1024 * 1024)
 #endif
