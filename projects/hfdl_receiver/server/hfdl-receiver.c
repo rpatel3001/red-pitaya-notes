@@ -38,15 +38,9 @@
 
 #define SYSCALLS_PER_LOOP 1
 
-// these values are set on start and reset
-uint16_t rx_rate_set = 1280;
-uint8_t rx_sel_set = 0;
-uint32_t rx_freq_set[NUMCHANS];
-
-
 // global for simpler resetRX function signature
-volatile uint8_t *rx_rst, *rx_sel;
-volatile uint16_t *rx_rate, *rx_cntr;
+volatile uint8_t *fifo_rst, *rx_sel, *phase_vld, *fracshift;
+volatile uint16_t *rd_cntr, *wr_cntr;
 volatile uint32_t *rx_freq;
 
 int interrupted = 0;
@@ -383,19 +377,10 @@ static uint32_t getPhase(uint32_t freq) {
 
 static void resetRX() {
   // stop RX
-  *rx_rst &= ~1;
-
-  // it's possible the reset above also resets receive parameters, so set them again
-  *rx_sel = rx_sel_set;
-  *rx_rate = rx_rate_set;
-  for(int i = 0; i < NUMCHANS; ++i)
-  {
-    rx_freq[i] = rx_freq_set[i];
-  }
-  usleep(50); // for good measure
+  *fifo_rst &= ~1;
 
   // start RX
-  *rx_rst |= 1;
+  *fifo_rst |= 1;
 }
 
 int main(int argc, char *argv[])
@@ -410,12 +395,6 @@ int main(int argc, char *argv[])
   if (CHUNK_SAMPLES > FIFO_SAMPLES / 2) {
     fprintf(stderr, "chunk samples %d should be half or less of FIFO samples %d", CHUNK_SAMPLES, FIFO_SAMPLES);
     return -1;
-  }
-
-  // set default frequency
-  for(i = 0; i < NUMCHANS; ++i)
-  {
-    rx_freq_set[i] = getPhase(600000);
   }
 
   //fprintf(stderr, "fifo samples %d\nchunk samples %d\n", FIFO_SAMPLES, CHUNK_SAMPLES);
@@ -446,12 +425,14 @@ int main(int argc, char *argv[])
   memset((void *) fifo, 0xb, FIFO_BYTES);
   #endif
 
-  rx_rst = (uint8_t *)(cfg + 0);
+  fifo_rst = (uint8_t *)(cfg + 0);
   rx_sel = (uint8_t *)(cfg + 1);
-  rx_rate = (uint16_t *)(cfg + 2);
+  phase_vld = (uint8_t *)(cfg + 2);
   rx_freq = (uint32_t *)(cfg + 4);
 
-  rx_cntr = (uint16_t *)(sts + 0);
+  rd_cntr = (uint16_t *)(sts + 0);
+  wr_cntr = (uint16_t *)(sts + 2);
+  fracshift = (uint8_t *)(sts + 4);
 
   struct client client_back[NUMCLIENTS];
   struct client *clients[NUMCLIENTS];
@@ -492,29 +473,38 @@ int main(int argc, char *argv[])
   int64_t sleepTime = 0;
   int64_t nextNetworkMaintenance = 0;
   int64_t now = 0;
+  uint8_t fracbuf = *fracshift;
+
+  fprintf(stderr, "%d: initial fracshift\n", fracbuf);
+
   while(!interrupted)
   {
     int doneSomething = 0;
 
     #ifdef TEST
     // simulate 25 MByte/s
-    *rx_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
+    *rd_cntr += 25 * last_iteration_us / SAMPLE_SIZE;
     #endif
 
-    int rx_samples = *rx_cntr;
+    int rx_samples = *rd_cntr;
 
     if(rx_samples >= FIFO_SAMPLES)
     {
       emitTime(stderr);
-      fprintf(stderr, "reset. last iteration us: %8lld rx_cntr %6d > fifo samples %6d ",
+      fprintf(stderr, "reset. last iteration us: %8lld rd_cntr %6d > fifo samples %6d ",
           last_iteration_us, rx_samples, FIFO_SAMPLES);
       fprintf(stderr, "readTime %5lld recvTime %5lld flushTime %5lld sleepTime %5lld\n",
           readTime, recvTime, flushTime, sleepTime);
       resetRX();
       rx_samples = 0;
       #ifdef TEST
-      *rx_cntr = 0;
+      *rd_cntr = 0;
       #endif
+    }
+
+    if (*fracshift != fracbuf) {
+      fracbuf = *fracshift;
+      fprintf(stderr, "%d: changed fracshift\n", *fracshift);
     }
 
     while(rx_samples >= CHUNK_SAMPLES)
@@ -570,7 +560,7 @@ int main(int argc, char *argv[])
 
       rx_samples -= CHUNK_SAMPLES;
       #ifdef TEST
-      *rx_cntr -= CHUNK_SAMPLES;
+      *rd_cntr -= CHUNK_SAMPLES;
       #endif
     }
 
@@ -620,7 +610,8 @@ int main(int argc, char *argv[])
           uint32_t phase = getPhase(freq);
           fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, phase);
           rx_freq[cl->channel] = phase;
-          rx_freq_set[cl->channel] = phase; // used on reset to set frequency to previous value
+          *phase_vld |= 1;
+          *phase_vld &= ~1;
         }
       }
       if (sysCalls > 0) {
@@ -694,7 +685,7 @@ int main(int argc, char *argv[])
   emitTime(stderr);
   fprintf(stderr, "exiting\n");
 
-  *rx_rst &= ~1;
+  *fifo_rst &= ~1;
 
   for(int id = 0; id < NUMCLIENTS; id++) {
     struct client *cl = clients[id];

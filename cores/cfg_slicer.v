@@ -17,7 +17,10 @@ module cfg_slicer #
   input wire aresetn,
   input wire [SAMP_WIDTH-1:0] din,
   input wire [CFG_WIDTH-1:0] cfg,
+  input wire [15:0] fifo_rd_cnt,
+  input wire [15:0] fifo_wr_cnt,
   output wire rst,
+  output wire [135:0] status,
   output reg [SAMP_WIDTH-1:0] outdata,
   output reg outvld
 );
@@ -51,36 +54,35 @@ module cfg_slicer #
   wire firvld;
   //wire [FULL_FIR_WIDTH-1:0] firdata;
   wire [47:0] firdata;
-  reg phasevld;
 
-  reg [CFG_WIDTH-1:0] cfgreg;
-
-  assign rst = cfgreg[0];
-  wire blank = cfgreg[8];
-  assign phase[0] = cfgreg[PHASE_WIDTH*2-1:PHASE_WIDTH*1];
-  assign phase[1] = cfgreg[PHASE_WIDTH*3-1:PHASE_WIDTH*2];
-  assign phase[2] = cfgreg[PHASE_WIDTH*4-1:PHASE_WIDTH*3];
-  assign phase[3] = cfgreg[PHASE_WIDTH*5-1:PHASE_WIDTH*4];
-  assign phase[4] = cfgreg[PHASE_WIDTH*6-1:PHASE_WIDTH*5];
-  assign phase[5] = cfgreg[PHASE_WIDTH*7-1:PHASE_WIDTH*6];
-  assign phase[6] = cfgreg[PHASE_WIDTH*8-1:PHASE_WIDTH*7];
-  assign phase[7] = cfgreg[PHASE_WIDTH*9-1:PHASE_WIDTH*8];
-  assign phase[8] = cfgreg[PHASE_WIDTH*10-1:PHASE_WIDTH*9];
-  assign phase[9] = cfgreg[PHASE_WIDTH*11-1:PHASE_WIDTH*10];
-  assign phase[10] = cfgreg[PHASE_WIDTH*12-1:PHASE_WIDTH*11];
-  assign phase[11] = cfgreg[PHASE_WIDTH*13-1:PHASE_WIDTH*12];
-  assign phase[12] = cfgreg[PHASE_WIDTH*14-1:PHASE_WIDTH*13];
+  assign rst = cfg[0];
+  wire blank = cfg[8];
+  wire phasevld = cfg[16];
+  assign phase[0] = cfg[PHASE_WIDTH*2-1:PHASE_WIDTH*1];
+  assign phase[1] = cfg[PHASE_WIDTH*3-1:PHASE_WIDTH*2];
+  assign phase[2] = cfg[PHASE_WIDTH*4-1:PHASE_WIDTH*3];
+  assign phase[3] = cfg[PHASE_WIDTH*5-1:PHASE_WIDTH*4];
+  assign phase[4] = cfg[PHASE_WIDTH*6-1:PHASE_WIDTH*5];
+  assign phase[5] = cfg[PHASE_WIDTH*7-1:PHASE_WIDTH*6];
+  assign phase[6] = cfg[PHASE_WIDTH*8-1:PHASE_WIDTH*7];
+  assign phase[7] = cfg[PHASE_WIDTH*9-1:PHASE_WIDTH*8];
+  assign phase[8] = cfg[PHASE_WIDTH*10-1:PHASE_WIDTH*9];
+  assign phase[9] = cfg[PHASE_WIDTH*11-1:PHASE_WIDTH*10];
+  assign phase[10] = cfg[PHASE_WIDTH*12-1:PHASE_WIDTH*11];
+  assign phase[11] = cfg[PHASE_WIDTH*13-1:PHASE_WIDTH*12];
+  assign phase[12] = cfg[PHASE_WIDTH*14-1:PHASE_WIDTH*13];
 
   reg [SAMP_WIDTH-1:0] samp;
 
   reg [4:0] fracshift = 0;
   integer shiftcntr = 0;
   integer lowsigcntr = 0;
+  integer highsigcntr = 0;
+
+  assign status = {99'b0, fracshift, fifo_wr_cnt, fifo_rd_cnt};
 
   always @(posedge aclk)
   begin
-    cfgreg <= cfg;
-    phasevld <= 1'b1;//cfg != cfgreg;
     samp <= blank ? 16'b0 : din;
   end
 
@@ -189,6 +191,8 @@ module cfg_slicer #
 
   always @(posedge aclk)
   begin
+    outvld <= firvld;
+
     if (lowsigcntr > ONE_SEC*5) begin
       fracshift <= fracshift - 1;
       lowsigcntr <= 0;
@@ -200,11 +204,25 @@ module cfg_slicer #
       end
     end
 
+    if (shiftfir > MAX_16) begin
+      highsigcntr <= highsigcntr + 1;
+      outdata <= MAX_16;
+    end else if (shiftfir < MIN_16) begin
+      highsigcntr <= highsigcntr + 1;
+      outdata <= MIN_16;
+    end else begin
+      shiftcntr <= shiftcntr + 1;
+      outdata <= shiftfir[SAMP_WIDTH-1:0];
+    end
+
+    if (highsigcntr > ONE_SEC/1000) begin
+      fracshift <= fracshift + 1;
+      highsigcntr <= 0;
+    end
+
     if (shiftcntr > ONE_SEC) begin
-      if (shiftfir > MAX_16 || shiftfir < MIN_16) begin
-        fracshift <= fracshift + 1;
-        shiftcntr <= 0;
-      end
+      shiftcntr <= 0;
+      highsigcntr <= 0;
     end else begin
       shiftcntr <= shiftcntr + 1;
     end
@@ -220,8 +238,6 @@ module cfg_slicer #
     //  shiftcntr <= shiftcntr + 1;
     //end
 
-    outvld <= firvld;
-    outdata <= shiftfir[SAMP_WIDTH-1:0];
   end
 
 endmodule
