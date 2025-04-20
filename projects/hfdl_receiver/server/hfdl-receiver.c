@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <sys/resource.h>
 #include <sched.h>
+#include <netinet/tcp.h>
 
 #define PHASE_BITS 29
 #define NUMCHANS 13
@@ -208,6 +209,7 @@ static void listenClient(struct client *c, int port) {
 
   int yes = 1;
   setsockopt(c->listenFd, SOL_SOCKET, SO_REUSEADDR, (void *)&yes, sizeof(yes));
+  //setsockopt(c->listenFd, IPPROTO_TCP, TCP_NODELAY, (void *)&yes, sizeof(yes));
 
   struct sockaddr_in addr;
 
@@ -476,6 +478,8 @@ int main(int argc, char *argv[])
   uint8_t fracbuf = *fracshift;
 
   fprintf(stderr, "%d: initial fracshift\n", fracbuf);
+  *phase_vld |= 1;
+  //*phase_vld = 1;
 
   while(!interrupted)
   {
@@ -608,10 +612,8 @@ int main(int argc, char *argv[])
           emitTime(stderr);
           /* set rx phase increment */
           uint32_t phase = getPhase(freq);
-          fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, phase);
           rx_freq[cl->channel] = phase;
-          *phase_vld |= 1;
-          *phase_vld &= ~1;
+          fprintf(stderr, "%d: freq %d, phase %d\n", cl->listenPort, freq, phase);
         }
       }
       if (sysCalls > 0) {
