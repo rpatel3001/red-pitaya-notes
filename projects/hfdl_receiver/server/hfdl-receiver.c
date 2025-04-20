@@ -36,6 +36,8 @@
 #define SAMPLE_SIZE 4 // in bytes
 #define FIFO_SAMPLES (FIFO_BYTES / SAMPLE_SIZE)
 
+#define SYSCALLS_PER_LOOP 1
+
 // these values are set on start and reset
 uint16_t rx_rate_set = 1280;
 uint8_t rx_sel_set = 0;
@@ -60,7 +62,7 @@ void signal_handler(int sig)
 
 // actually 25% more for CU8 buffers but we should have 512M to work with
 #ifndef TEST
-  #define TOTAL_NET_BUFFER (256 * 1024 * 1024)
+  #define TOTAL_NET_BUFFER (128 * 1024 * 1024)
 #else
   #define TOTAL_NET_BUFFER (16 * 1024 * 1024)
 #endif
@@ -584,7 +586,7 @@ int main(int argc, char *argv[])
         nextNetworkMaintenance = now + 100 * 1000;
       }
       int sysCalls = 0;
-      for(; id < NUMCLIENTS && sysCalls < 3; id++) {
+      for(; id < NUMCLIENTS && sysCalls < SYSCALLS_PER_LOOP; id++) {
         struct client *cl = clients[id];
         //fprintf(stderr, "cl->fd %d\n", cl->fd);
         if (cl->fd == -1) {
@@ -640,7 +642,7 @@ int main(int argc, char *argv[])
       // just assume 1450 for good measure
       // always send data equivalent to 8 packets per syscall
       int sendSize = 8 * 1450;
-      for(; id < NUMCLIENTS && sysCalls < 3; id++) {
+      for(; id < NUMCLIENTS && sysCalls < SYSCALLS_PER_LOOP; id++) {
         struct client *cl = clients[id];
         if (cl->fd == -1) {
           continue;
