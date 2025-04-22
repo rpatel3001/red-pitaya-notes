@@ -475,9 +475,14 @@ int main(int argc, char *argv[])
   int64_t sleepTime = 0;
   int64_t nextNetworkMaintenance = 0;
   int64_t now = 0;
-  uint8_t fracbuf = *fracshift;
+  uint8_t fracbuf[NUMCHANS];
 
-  fprintf(stderr, "%d: initial fracshift\n", fracbuf);
+  for (int i = 0; i < NUMCHANS; i++) {
+    fracbuf[i] = fracshift[i];
+    emitTime(stderr);
+    fprintf(stderr, "chan %d: initial fracshift is %d\n", i, fracbuf[i]);
+  }
+
   *phase_vld |= 1;
   //*phase_vld = 1;
 
@@ -506,9 +511,12 @@ int main(int argc, char *argv[])
       #endif
     }
 
-    if (*fracshift != fracbuf) {
-      fracbuf = *fracshift;
-      fprintf(stderr, "%d: changed fracshift\n", *fracshift);
+    for (int i = 0; i < NUMCHANS; i++) {
+      if (fracshift[i] != fracbuf[i]) {
+        fracbuf[i] = fracshift[i];
+        emitTime(stderr);
+        fprintf(stderr, "chan %d: changed fracshift to %d\n", i, fracshift[i]);
+      }
     }
 
     while(rx_samples >= CHUNK_SAMPLES)

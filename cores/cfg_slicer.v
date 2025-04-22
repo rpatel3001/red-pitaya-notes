@@ -58,20 +58,20 @@ module cfg_slicer #
   assign rstn = cfgreg[0];
   wire blank = cfgreg[8];
   wire phasevld = cfgreg[16];
+
+  assign status[31:0] = {8'b0, firuser, rdcnt};
+
+  reg [4:0] fracshift[NUM_CHANS-1:0];
+
   genvar j;
   generate
     for (j = 0; j < NUM_CHANS; j = j + 1) begin
       assign phase[j] = cfg[PHASE_WIDTH*(j+1) +: PHASE_WIDTH];
+      assign status[32 + j*8 +: 8] = fracshift[j];
     end
   endgenerate
 
   reg [SAMP_WIDTH-1:0] samp;
-
-  reg [4:0] fracshift = 0;
-  integer shiftcntr = 0;
-  integer lowsigcntr = 0;
-
-  assign status = {203'b0, fracshift, 8'b0, firuser, rdcnt};
 
   always @(posedge aclk)
   begin
@@ -181,33 +181,55 @@ module cfg_slicer #
   );
 
   // remove AXI padding and shift
-  wire signed [FIR_OUT_WIDTH-1:0] shiftfir = firdata >>> fracshift;
+  wire [7:0] firchan = firuser >> 1;
+  wire [7:0] firband = firchan >> 1;
+
+  reg signed [FIR_OUT_WIDTH-1:0] regfir;
+  reg [7:0] regband;
+  reg regvld;
+
+  reg signed [FIR_OUT_WIDTH-1:0] shiftfir;
+  reg [7:0] shiftband;
+  reg shiftvld;
+
   wire hisig = (shiftfir > MAX_16) || (shiftfir < MIN_16);
   wire losig = (shiftfir < MAX_15) && (shiftfir > MIN_15);
 
+  integer shiftcntr = 0;
+  integer lowsigcntr[NUM_CHANS-1:0];
+
   always @(posedge aclk)
   begin
-    if (lowsigcntr > ONE_SEC*5) begin
-      fracshift <= fracshift - 1;
-      lowsigcntr <= 0;
+
+    regfir <= firdata;
+    regvld <= firvld;
+    regband <= firband;
+
+    shiftfir <= regfir >>> fracshift[regband];
+    shiftvld <= regvld;
+    shiftband <= regband;
+
+    if (lowsigcntr[shiftband] > ONE_SEC*5) begin
+      fracshift[shiftband] <= fracshift[shiftband] - 1;
+      lowsigcntr[shiftband] <= 0;
     end else begin
       if (losig) begin
-        lowsigcntr <= lowsigcntr + 1;
+        lowsigcntr[shiftband] <= lowsigcntr[shiftband] + 1;
       end else begin
-        lowsigcntr <= 0;
+        lowsigcntr[shiftband] <= 0;
       end
     end
 
     if (shiftcntr > ONE_SEC/1000) begin
       if (hisig) begin
-        fracshift <= fracshift + 1;
+        fracshift[shiftband] <= fracshift[shiftband] + 1;
         shiftcntr <= 0;
       end
     end else begin
       shiftcntr <= shiftcntr + 1;
     end
 
-    outvld <= firvld;
+    outvld <= shiftvld;
     outdata <= shiftfir[SAMP_WIDTH-1:0];
   end
 
