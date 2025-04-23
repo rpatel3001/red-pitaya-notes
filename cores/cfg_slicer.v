@@ -26,6 +26,7 @@ module cfg_slicer #
 );
 
   localparam integer ONE_SEC = 122880000;
+  localparam integer ONE_SEC_CHAN = 307200;
   localparam integer DDS_WIDTH = 32;
   localparam integer ADC_DATA_WIDTH = 14;
   localparam integer PADDING_WIDTH = SAMP_WIDTH - ADC_DATA_WIDTH;
@@ -191,40 +192,57 @@ module cfg_slicer #
   reg signed [FIR_OUT_WIDTH-1:0] shiftfir;
   reg [7:0] shiftband;
   reg shiftvld;
+  reg shiftlo;
+  reg shifthi;
 
-  wire hisig = (shiftfir > MAX_16) || (shiftfir < MIN_16);
-  wire losig = (shiftfir < MAX_15) && (shiftfir > MIN_15);
+  wire losig = (regfir < MAX_15) && (regfir > MIN_15);
+  wire hisig = (regfir > MAX_16) || (regfir < MIN_16);
 
   integer shiftcntr = 0;
   integer lowsigcntr[NUM_CHANS-1:0];
+  integer highsigcntr[NUM_CHANS-1:0];
+  integer k;
 
   always @(posedge aclk)
   begin
 
-    regfir <= firdata;
+    regfir <= firdata >>> fracshift[firband];
     regvld <= firvld;
     regband <= firband;
 
-    shiftfir <= regfir >>> fracshift[regband];
+    shiftfir <= regfir;
     shiftvld <= regvld;
     shiftband <= regband;
+    shiftlo <= losig;
+    shifthi <= hisig;
 
-    if (lowsigcntr[shiftband] > ONE_SEC*5) begin
-      fracshift[shiftband] <= fracshift[shiftband] - 1;
-      lowsigcntr[shiftband] <= 0;
-    end else begin
-      if (losig) begin
+    if (shiftvld) begin
+      if (shiftlo) begin
         lowsigcntr[shiftband] <= lowsigcntr[shiftband] + 1;
       end else begin
         lowsigcntr[shiftband] <= 0;
       end
+
+      if (lowsigcntr[shiftband] > ONE_SEC_CHAN*5) begin
+        fracshift[shiftband] <= fracshift[shiftband] - 1;
+        lowsigcntr[shiftband] <= 0;
+      end
+
+      if (shifthi) begin
+        highsigcntr[shiftband] <= highsigcntr[shiftband] + 1;
+      end
+
+      if (highsigcntr[shiftband] > ONE_SEC_CHAN/1000) begin
+        highsigcntr[shiftband] <= 0;
+        fracshift[shiftband] <= fracshift[shiftband] + 1;
+      end
     end
 
-    if (shiftcntr > ONE_SEC/1000) begin
-      if (hisig) begin
-        fracshift[shiftband] <= fracshift[shiftband] + 1;
+    if (shiftcntr > ONE_SEC) begin
         shiftcntr <= 0;
-      end
+        for (k = 0; k < NUM_CHANS; k = k + 1) begin
+          highsigcntr[k] <= 0;
+        end
     end else begin
       shiftcntr <= shiftcntr + 1;
     end
