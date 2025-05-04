@@ -18,6 +18,11 @@
 #include <sched.h>
 #include <netinet/tcp.h>
 
+// peri.c
+int att_initial();
+void att_cleanUp();
+int set_att_value(uint8_t att_val);
+
 #define PHASE_BITS 29
 #define NUMCHANS 13
 #define TCP_PORT 9000
@@ -41,7 +46,8 @@
 
 // global for simpler resetRX function signature
 volatile uint8_t *fifo_rst, *rx_sel, *phase_vld, *fracshift;
-volatile uint16_t *rd_cntr, *wr_cntr;
+volatile uint16_t *rd_cntr;
+volatile int16_t *wr_cntr;
 volatile uint32_t *rx_freq;
 
 int interrupted = 0;
@@ -415,6 +421,8 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
+  att_initial();
+
   cfg = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x40000000);
   sts = mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x41000000);
   fifo = mmap(NULL, FIFO_BYTES, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0x42000000);
@@ -433,7 +441,7 @@ int main(int argc, char *argv[])
   rx_freq = (uint32_t *)(cfg + 4);
 
   rd_cntr = (uint16_t *)(sts + 0);
-  wr_cntr = (uint16_t *)(sts + 2);
+  wr_cntr = (int16_t *)(sts + 2);
   fracshift = (uint8_t *)(sts + 4);
 
   struct client client_back[NUMCLIENTS];
@@ -476,12 +484,18 @@ int main(int argc, char *argv[])
   int64_t nextNetworkMaintenance = 0;
   int64_t now = 0;
   uint8_t fracbuf[NUMCHANS];
+  int16_t wrcntbuf1, wrcntbufmax, ovf;
+  uint8_t att = 32;
+  time_t lastatt = time(0);
 
   for (int i = 0; i < NUMCHANS; i++) {
     fracbuf[i] = fracshift[i];
     emitTime(stderr);
     fprintf(stderr, "chan %d: initial fracshift is %d\n", i, fracbuf[i]);
   }
+  emitTime(stderr);
+  fprintf(stderr, "initial att: %d\n", att);
+  set_att_value(att);
 
   *phase_vld |= 1;
   //*phase_vld = 1;
@@ -509,6 +523,33 @@ int main(int argc, char *argv[])
       #ifdef TEST
       *rd_cntr = 0;
       #endif
+    }
+
+    wrcntbuf1 = *wr_cntr;
+    ovf = wrcntbuf1 & 1;
+
+    if (ovf) {
+      if (time(0) - lastatt > 2 && att < 63) {
+        doneSomething = 1;
+        emitTime(stderr);
+        fprintf(stderr, "adc overflow at att %d, increasing\n", att);
+        lastatt = time(0);
+        att += 1;
+        set_att_value(att);
+      }
+    } else if(time(0) - lastatt > 5 && att > 0) {
+      doneSomething = 1;
+      lastatt = time(0);
+      att -= 1;
+      emitTime(stderr);
+      fprintf(stderr, "decreasing att to %d\n", att);
+      set_att_value(att);
+    }
+
+    if (wrcntbuf1 != wrcntbufmax && wrcntbuf1 != 0) {
+      wrcntbufmax = wrcntbuf1;
+      //emitTime(stderr);
+      //fprintf(stderr, "adc max %d\n", wrcntbufmax);
     }
 
     for (int i = 0; i < NUMCHANS; i++) {
@@ -694,6 +735,8 @@ int main(int argc, char *argv[])
 
   emitTime(stderr);
   fprintf(stderr, "exiting\n");
+
+  att_cleanUp();
 
   *fifo_rst &= ~1;
 

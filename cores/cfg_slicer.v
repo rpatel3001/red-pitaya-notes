@@ -15,8 +15,10 @@ module cfg_slicer #
 (
   input wire aclk,
   input wire aresetn,
+  input wire adc_ovfl,
   input wire [15:0] rdcnt,
   input wire [15:0] wrcnt,
+  input wire [SAMP_WIDTH-1:0] rawdin,
   input wire [SAMP_WIDTH-1:0] din,
   input wire [CFG_WIDTH-1:0] cfg,
   output wire rstn,
@@ -28,8 +30,6 @@ module cfg_slicer #
   localparam integer ONE_SEC = 122880000;
   localparam integer ONE_SEC_CHAN = 307200;
   localparam integer DDS_WIDTH = 32;
-  localparam integer ADC_DATA_WIDTH = 14;
-  localparam integer PADDING_WIDTH = SAMP_WIDTH - ADC_DATA_WIDTH;
 
   localparam signed [SAMP_WIDTH-1:0] MAX_16 =  (1 << (SAMP_WIDTH-1)) - 1;
   localparam signed [SAMP_WIDTH-1:0] MIN_16 = -(1 << (SAMP_WIDTH-1));
@@ -60,7 +60,13 @@ module cfg_slicer #
   wire blank = cfgreg[8];
   wire phasevld = cfgreg[16];
 
-  assign status[31:0] = {8'b0, firuser, rdcnt};
+  reg adc_ovfl_latch;
+
+  reg signed [SAMP_WIDTH-1:0] samp;
+  reg signed [SAMP_WIDTH-1:0] maxsamp;
+  reg [SAMP_WIDTH-1:0] rawsamp;
+
+  assign status[31:0] = {maxsamp[15:1], adc_ovfl_latch, rdcnt};
 
   reg [4:0] fracshift[NUM_CHANS-1:0];
 
@@ -72,12 +78,11 @@ module cfg_slicer #
     end
   endgenerate
 
-  reg [SAMP_WIDTH-1:0] samp;
-
   always @(posedge aclk)
   begin
     cfgreg <= cfg;
-    samp <= blank ? 16'b0 : din;
+    samp <= din;
+    rawsamp <= rawdin;
   end
 
   genvar i;
@@ -216,6 +221,16 @@ module cfg_slicer #
     shiftlo <= losig;
     shifthi <= hisig;
 
+    if (adc_ovfl) begin
+      adc_ovfl_latch <= 1'b1;
+    end
+
+    if (samp > maxsamp) begin
+      maxsamp <= samp;
+    end else if (-samp > maxsamp) begin
+      maxsamp <= -samp;
+    end
+
     if (shiftvld) begin
       if (shiftlo) begin
         lowsigcntr[shiftband] <= lowsigcntr[shiftband] + 1;
@@ -240,6 +255,8 @@ module cfg_slicer #
 
     if (shiftcntr > ONE_SEC) begin
         shiftcntr <= 0;
+        adc_ovfl_latch <= 1'b0;
+        maxsamp <= 0;
         for (k = 0; k < NUM_CHANS; k = k + 1) begin
           highsigcntr[k] <= 0;
         end
